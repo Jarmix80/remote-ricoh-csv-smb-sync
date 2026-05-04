@@ -27,6 +27,12 @@ Automatyczne pobieranie licznikow CSV z portalu Ricoh i zapis na udziale SMB.
 - Projekt jest udostepniony na licencji MIT (plik `LICENSE`).
 - Zapraszamy do komentarzy, issue i propozycji usprawnien.
 
+### Wsparcie projektu
+- GitHub Sponsors: `Jarmix80`
+- Ko-fi: `https://ko-fi.com/jarmix80`
+- PayPal: `jarmix80`
+- Kazda uwaga, komentarz i propozycja rozwoju sa mile widziane.
+
 ### Wymagania
 - Python 3.12+
 - Playwright + Chromium
@@ -112,6 +118,12 @@ Automatic download of Ricoh meter CSV files and saving them to an SMB share.
 ### License and feedback
 - The project is released under the MIT License (`LICENSE` file).
 - Feedback is welcome: comments, issues, and improvement suggestions.
+
+### Support the project
+- GitHub Sponsors: `Jarmix80`
+- Ko-fi: `https://ko-fi.com/jarmix80`
+- PayPal: `jarmix80`
+- Comments, issue reports, and improvement ideas are welcome.
 
 ### Requirements
 - Python 3.12+
