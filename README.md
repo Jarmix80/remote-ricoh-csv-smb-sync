@@ -1,5 +1,7 @@
 # remote_ricoh
 
+[![Sponsorzy](https://img.shields.io/github/sponsors/Jarmix80?style=for-the-badge)](https://github.com/sponsors/Jarmix80)
+
 ## PL
 Automatyczne pobieranie licznikow CSV z portalu Ricoh i zapis na udziale SMB.
 
