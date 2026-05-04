@@ -1,14 +1,17 @@
 {
-  "saved_at": "2026-05-04T15:45:00+02:00",
+  "saved_at": "2026-05-04T22:55:00+02:00",
   "project": "remote_ricoh",
-  "summary": "Wdrozone: automat Ricoh->CSV->SMB, cron 06:00, oraz tryb --dry-run do diagnostyki SMB.",
+  "summary": "Automat Ricoh dziala end-to-end: login, Request CSV, polling MyHome, pobranie ZIP, zapis 2 CSV na SMB, log dzienny SMB.",
   "commits": [
     "b33d368",
     "cd2f931",
-    "dcf6efc"
+    "dcf6efc",
+    "75449f5",
+    "f95dd0b"
   ],
   "paths": {
     "entrypoint": "src/remote_ricoh/run.py",
+    "portal": "src/remote_ricoh/portal.py",
     "readme": "README.md",
     "cron_script": "scripts/install_cron.sh"
   },
@@ -26,7 +29,11 @@
   },
   "last_runtime": {
     "cron_installed": true,
-    "dry_run_result": "STATUS_NOT_FOUND 0xc0000225",
-    "dry_run_note": "Sciezka SMB z .env nie zostala odnaleziona po stronie serwera."
+    "full_run_status": "success",
+    "last_requested_id": "20260504204355249",
+    "output_files": [
+      "DPLAC_04-05-2026.csv",
+      "DPLAC_Not_obtained_04-05-2026.csv"
+    ]
   }
 }
