@@ -1,0 +1,21 @@
+{
+  "saved_at": "2026-05-04T15:30:00+02:00",
+  "project": "remote_ricoh",
+  "summary": "Wdrozono automat pobierania CSV Ricoh (Playwright), rozpakowanie ZIP, zapis na SMB, log dzienny na SMB, lockfile, CLI, testy i cron installer.",
+  "paths": {
+    "entrypoint": "src/remote_ricoh/run.py",
+    "readme": "README.md",
+    "cron_script": "scripts/install_cron.sh"
+  },
+  "env_required": [
+    "login_ricoh",
+    "pass_ricoh",
+    "sciezka_remote",
+    "user_smb",
+    "pass_smb"
+  ],
+  "notes": [
+    "Testy jednostkowe przechodza lokalnie.",
+    "Playwright wymaga bibliotek systemowych (playwright install-deps)."
+  ]
+}
