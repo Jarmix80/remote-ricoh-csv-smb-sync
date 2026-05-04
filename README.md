@@ -23,6 +23,10 @@ Automatyczne pobieranie licznikow CSV z portalu Ricoh i zapis na udziale SMB.
 - Katalogi lokalnych artefaktow (`.codex/`, `.debug/`, `logs/`, `.state/`) sa ignorowane.
 - Nie zapisuj hasel/tokenow w kodzie, commitach ani issue/PR.
 
+### Licencja i feedback
+- Projekt jest udostepniony na licencji MIT (plik `LICENSE`).
+- Zapraszamy do komentarzy, issue i propozycji usprawnien.
+
 ### Wymagania
 - Python 3.12+
 - Playwright + Chromium
@@ -104,6 +108,10 @@ Automatic download of Ricoh meter CSV files and saving them to an SMB share.
 - Repository includes only `.env.example` without sensitive values.
 - Local artifacts (`.codex/`, `.debug/`, `logs/`, `.state/`) are ignored.
 - Do not put credentials/tokens in source code, commits, issues, or PRs.
+
+### License and feedback
+- The project is released under the MIT License (`LICENSE` file).
+- Feedback is welcome: comments, issues, and improvement suggestions.
 
 ### Requirements
 - Python 3.12+
