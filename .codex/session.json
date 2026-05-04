@@ -1,7 +1,12 @@
 {
-  "saved_at": "2026-05-04T15:30:00+02:00",
+  "saved_at": "2026-05-04T15:45:00+02:00",
   "project": "remote_ricoh",
-  "summary": "Wdrozono automat pobierania CSV Ricoh (Playwright), rozpakowanie ZIP, zapis na SMB, log dzienny na SMB, lockfile, CLI, testy i cron installer.",
+  "summary": "Wdrozone: automat Ricoh->CSV->SMB, cron 06:00, oraz tryb --dry-run do diagnostyki SMB.",
+  "commits": [
+    "b33d368",
+    "cd2f931",
+    "dcf6efc"
+  ],
   "paths": {
     "entrypoint": "src/remote_ricoh/run.py",
     "readme": "README.md",
@@ -14,8 +19,14 @@
     "user_smb",
     "pass_smb"
   ],
-  "notes": [
-    "Testy jednostkowe przechodza lokalnie.",
-    "Playwright wymaga bibliotek systemowych (playwright install-deps)."
-  ]
+  "last_checks": {
+    "ruff": "pass",
+    "black_check": "pass",
+    "pytest": "9 passed"
+  },
+  "last_runtime": {
+    "cron_installed": true,
+    "dry_run_result": "STATUS_NOT_FOUND 0xc0000225",
+    "dry_run_note": "Sciezka SMB z .env nie zostala odnaleziona po stronie serwera."
+  }
 }
