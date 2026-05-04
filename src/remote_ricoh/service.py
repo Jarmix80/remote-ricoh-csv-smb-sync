@@ -78,6 +78,24 @@ class Runner:
             logger.info("Proces zakonczony sukcesem.")
         return 0
 
+    def run_dry(self) -> int:
+        """Wykonuje diagnostyke SMB i logowania bez laczenia z portalem Ricoh."""
+        log_name = log_file_name_for_today()
+
+        with SmbClient(
+            remote_unc=self.settings.sciezka_remote,
+            username=self.settings.user_smb,
+            password=self.settings.pass_smb,
+        ) as smb:
+            logger = _SmbLogger(smb=smb, log_name=log_name)
+            smb.ensure_directory()
+            smb.ensure_directory(["log"])
+            logger.info("DRY-RUN: start diagnostyki SMB.")
+            entries = smb.list_directory()
+            logger.info(f"DRY-RUN: katalog docelowy dostepny, wpisow: {len(entries)}.")
+            logger.info("DRY-RUN: zakonczono sukcesem.")
+        return 0
+
 
 @dataclass(slots=True)
 class _SmbLogger:

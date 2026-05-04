@@ -52,6 +52,13 @@ source .venv/bin/activate
 python -m remote_ricoh.run --env-file .env
 ```
 
+Tryb diagnostyczny (bez logowania do Ricoh, tylko walidacja SMB + log):
+
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --dry-run
+```
+
 Kody wyjscia:
 - `0` sukces,
 - `1` blad wykonania,

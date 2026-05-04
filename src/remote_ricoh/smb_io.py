@@ -56,6 +56,18 @@ class SmbClient:
             handle.write(f"[{timestamp}] {line}\n")
         return target
 
+    def list_directory(self, relative_parts: Iterable[str] = ()) -> list[str]:
+        """Listuje zawartosc katalogu i zwraca posortowane nazwy wpisow."""
+        target = self._join(relative_parts)
+        entries = smbclient.listdir(target)
+        return sorted(str(item) for item in entries)
+
+    def ensure_directory(self, relative_parts: Iterable[str] = ()) -> str:
+        """Zapewnia istnienie katalogu i zwraca jego sciezke UNC."""
+        target = self._join(relative_parts)
+        smbclient.makedirs(target, exist_ok=True)
+        return target
+
     def _join(self, relative_parts: Iterable[str]) -> str:
         path = PureWindowsPath(self.base_unc)
         for part in relative_parts:

@@ -23,6 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=".state/remote_ricoh.lock",
         help="Sciezka lockfile zapobiegajacego rownoleglemu uruchomieniu.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Tryb diagnostyczny: sprawdza konfiguracje i SMB bez logowania do Ricoh.",
+    )
     return parser
 
 
@@ -42,6 +47,8 @@ def main() -> int:
     try:
         with FileLock(lock_file):
             runner = Runner(settings)
+            if args.dry_run:
+                return runner.run_dry()
             return runner.run()
     except AlreadyRunningError as exc:
         print(f"INFO: {exc}")
