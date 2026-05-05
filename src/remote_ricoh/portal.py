@@ -145,7 +145,6 @@ class RicohPortalClient:
         page.on("dialog", handle_dialog)
 
         try:
-            min_requested_id = int(datetime.now().strftime("%Y%m%d%H%M%S") + "000")
             request_button = self._first_locator(
                 page,
                 [
@@ -165,9 +164,7 @@ class RicohPortalClient:
                 log(f"Wyslano Request CSV. Requested ID: {requested_id}")
                 return requested_id
 
-            requested_id = self._wait_for_new_requested_id(
-                page, known_ids, log, min_requested_id=min_requested_id
-            )
+            requested_id = self._wait_for_new_requested_id(page, known_ids, log)
             if not requested_id:
                 raise PortalError("Nie udalo sie odczytac Requested ID po wyslaniu zadania CSV.")
 
@@ -240,22 +237,24 @@ class RicohPortalClient:
         page: Page,
         known_ids: set[str],
         log: Callable[[str], None],
-        min_requested_id: int,
     ) -> str | None:
         """Czeka na pojawienie sie nowego RequestedId po kliknieciu Request."""
         deadline = time.monotonic() + 120
+        last_ids: set[str] = set()
         while time.monotonic() <= deadline:
             current_ids = self._extract_requested_ids_from_html(
                 self._load_myhome_records_html(page)
             )
-            fresh_ids = {
-                value for value in current_ids if value.isdigit() and int(value) >= min_requested_id
-            }
-            new_ids = sorted(fresh_ids - known_ids, reverse=True)
+            last_ids = current_ids
+            new_ids = sorted(current_ids - known_ids, reverse=True)
             if new_ids:
                 return new_ids[0]
             log("Brak nowego Requested ID w MyHome, ponawiam odczyt.")
             page.wait_for_timeout(2_000)
+        fallback_id = self._pick_latest_requested_id(last_ids)
+        if fallback_id:
+            log("Brak nowego Requested ID; uzywam najnowszego ID z tabeli MyHome jako fallback.")
+            return fallback_id
         return None
 
     def _load_myhome_records_html(self, page: Page) -> str:
@@ -337,6 +336,13 @@ class RicohPortalClient:
         start.dispatch_event("change")
         end.dispatch_event("change")
         log(f"Ustawiono zakres dat Request CSV: {today} - {today}.")
+
+    @staticmethod
+    def _pick_latest_requested_id(ids: set[str]) -> str | None:
+        numeric_ids = [value for value in ids if value.isdigit()]
+        if not numeric_ids:
+            return None
+        return max(numeric_ids, key=int)
 
     @staticmethod
     def _first_locator(page: Page, selectors: list[str]) -> Locator | None:
