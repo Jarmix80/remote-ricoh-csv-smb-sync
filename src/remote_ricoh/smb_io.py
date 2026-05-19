@@ -42,10 +42,11 @@ class SmbClient:
     def write_binary(self, relative_parts: Iterable[str], payload: bytes) -> str:
         """Zapisuje plik binarny na SMB i zwraca finalna sciezke UNC."""
         target = self._join(relative_parts)
-        self._ensure_parent(target)
-        with smbclient.open_file(target, mode="wb") as handle:
+        unique_target = self._resolve_unique_target(target)
+        self._ensure_parent(unique_target)
+        with smbclient.open_file(unique_target, mode="wb") as handle:
             handle.write(payload)
-        return target
+        return unique_target
 
     def append_log_line(self, relative_parts: Iterable[str], line: str) -> str:
         """Dopisuje pojedyncza linie logu UTF-8 do pliku na SMB."""
@@ -74,6 +75,23 @@ class SmbClient:
             cleaned = PureWindowsPath(part).name
             path = path / cleaned
         return str(path)
+
+    def _resolve_unique_target(self, target_unc: str) -> str:
+        """Dla istniejacego pliku wybiera nazwe z kolejnym sufiksem (n)."""
+        if not smbclient.path.exists(target_unc):
+            return target_unc
+
+        target_path = PureWindowsPath(target_unc)
+        stem = target_path.stem
+        suffix = target_path.suffix
+        parent = target_path.parent
+
+        counter = 1
+        while True:
+            candidate = str(parent / f"{stem}({counter}){suffix}")
+            if not smbclient.path.exists(candidate):
+                return candidate
+            counter += 1
 
     def _ensure_parent(self, target_unc: str) -> None:
         parent = str(PureWindowsPath(target_unc).parent)

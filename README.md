@@ -79,7 +79,9 @@ Kody wyjscia:
 - `3` aktywny lockfile
 
 ### Cron
-Instalacja wpisu cron (06:00 codziennie):
+Instalacja wpisow cron:
+- codziennie o `06:00`
+- oraz po restarcie serwera (`@reboot`, start po 180s)
 ```bash
 ./scripts/install_cron.sh
 ```
@@ -171,7 +173,9 @@ Exit codes:
 - `3` lockfile active
 
 ### Cron
-Install daily cron job (06:00):
+Install cron entries:
+- daily at `06:00`
+- and after server restart (`@reboot`, starts after 180s)
 ```bash
 ./scripts/install_cron.sh
 ```
