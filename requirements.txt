@@ -1,6 +1,9 @@
 playwright==1.53.0
 python-dotenv==1.0.1
 smbprotocol==1.15.0
+fdb
+firebirdsql
+passlib
 pytest==8.3.3
 ruff==0.14.0
 black==25.9.0

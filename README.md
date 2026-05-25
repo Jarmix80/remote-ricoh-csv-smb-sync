@@ -3,7 +3,7 @@
 [![Sponsorzy](https://img.shields.io/github/sponsors/Jarmix80?style=for-the-badge)](https://github.com/sponsors/Jarmix80)
 
 ## PL
-Automatyczne pobieranie licznikow CSV z portalu Ricoh i zapis na udziale SMB.
+Automatyczne pobieranie licznikow CSV z portalu Ricoh, zapis na udziale SMB oraz import `DPLAC` do Firebird `CMAIL`.
 
 ### Co robi proces
 1. Start z `https://nslep.osp.ricoh.co.jp/atremotecenter/RequestCsv.aspx`.
@@ -17,7 +17,8 @@ Automatyczne pobieranie licznikow CSV z portalu Ricoh i zapis na udziale SMB.
 7. Zapis na SMB jako:
    - `DPLAC_dd-mm-rrrr.csv`
    - `DPLAC_Not_obtained_dd-mm-rrrr.csv`
-8. Zapis logu dziennego na SMB: `log/ricoh_YYYY-MM-DD.log`.
+8. Import `DPLAC_dd-mm-rrrr.csv` do tabeli Firebird `CMAIL`.
+9. Zapis logu dziennego na SMB: `log/ricoh_YYYY-MM-DD.log`.
 
 ### Bezpieczenstwo danych
 - Sekrety sa trzymane tylko w lokalnym `.env` (plik ignorowany przez Git).
@@ -39,6 +40,7 @@ Automatyczne pobieranie licznikow CSV z portalu Ricoh i zapis na udziale SMB.
 - Python 3.12+
 - Playwright + Chromium
 - Dostep SMB do katalogu docelowego
+- Biblioteka klienta Firebird dostepna w systemie (`libfbclient`/zgodny klient legacy)
 
 ### Konfiguracja
 Utworz lokalny `.env` na podstawie `.env.example`:
@@ -49,7 +51,21 @@ pass_ricoh=
 sciezka_remote=//serwer/udzial/katalog
 user_smb=
 pass_smb=
+FB_HOST=127.0.0.1
+FB_PORT=3050
+FB_USER=SYSDBA
+FB_PASSWORD=masterkey
+FB_DATABASE=BAZAMS_TEST
+FB_CHARSET=WIN1250
+FB_ROLE=
+FB_LOCAL_COPY_PATH=
 ```
+
+Przelaczenie na inna baze:
+- test/local alias na serwerze Firebird: zostaw `FB_MODE=network` i zmien `FB_HOST` / `FB_DATABASE`
+- produkcja na Windows Server 2022: zostaw `FB_MODE=network`, ustaw host produkcyjny, port i alias lub pelna sciezke `.FDB`
+- lokalna kopia pliku `.FDB`: ustaw `FB_MODE=local` i wpisz sciezke do pliku w `FB_LOCAL_COPY_PATH`
+- sekcja `FB_*` jest opcjonalna: gdy jej brakuje albo Firebird jest niedostepny, CSV nadal zostana zapisane na SMB, a import do `CMAIL` zostanie tylko pominiety z ostrzezeniem w logu
 
 ### Instalacja
 ```bash
@@ -66,10 +82,24 @@ source .venv/bin/activate
 python -m remote_ricoh.run --env-file .env
 ```
 
-Diagnostyka SMB (bez logowania Ricoh):
+Diagnostyka SMB + Firebird (bez logowania Ricoh):
 ```bash
 source .venv/bin/activate
 python -m remote_ricoh.run --env-file .env --dry-run
+```
+
+Tryb post-download dla juz pobranego `DPLAC.csv`:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --dplac-csv /sciezka/do/DPLAC.csv
+```
+
+Tryb post-download z opcjonalnym `DPLAC_Not_obtained.csv`:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env \
+  --dplac-csv /sciezka/do/DPLAC.csv \
+  --dplac-not-obtained-csv /sciezka/do/DPLAC_Not_obtained.csv
 ```
 
 Kody wyjscia:
@@ -97,7 +127,7 @@ pytest
 ---
 
 ## EN
-Automatic download of Ricoh meter CSV files and saving them to an SMB share.
+Automatic download of Ricoh meter CSV files, saving them to an SMB share, and importing `DPLAC` into Firebird `CMAIL`.
 
 ### What the process does
 1. Starts from `https://nslep.osp.ricoh.co.jp/atremotecenter/RequestCsv.aspx`.
@@ -111,7 +141,8 @@ Automatic download of Ricoh meter CSV files and saving them to an SMB share.
 7. Saves to SMB as:
    - `DPLAC_dd-mm-yyyy.csv`
    - `DPLAC_Not_obtained_dd-mm-yyyy.csv`
-8. Writes daily log on SMB: `log/ricoh_YYYY-MM-DD.log`.
+8. Imports `DPLAC_dd-mm-yyyy.csv` into the Firebird `CMAIL` table.
+9. Writes daily log on SMB: `log/ricoh_YYYY-MM-DD.log`.
 
 ### Sensitive data handling
 - Secrets are stored only in local `.env` (ignored by Git).
@@ -133,6 +164,7 @@ Automatic download of Ricoh meter CSV files and saving them to an SMB share.
 - Python 3.12+
 - Playwright + Chromium
 - SMB access to target directory
+- Firebird client library available on the host (`libfbclient` or compatible legacy client)
 
 ### Configuration
 Create local `.env` from `.env.example`:
@@ -143,7 +175,21 @@ pass_ricoh=
 sciezka_remote=//server/share/folder
 user_smb=
 pass_smb=
+FB_HOST=127.0.0.1
+FB_PORT=3050
+FB_USER=SYSDBA
+FB_PASSWORD=masterkey
+FB_DATABASE=BAZAMS_TEST
+FB_CHARSET=WIN1250
+FB_ROLE=
+FB_LOCAL_COPY_PATH=
 ```
+
+Switching to another database:
+- test/local alias on a Firebird server: keep `FB_MODE=network` and change `FB_HOST` / `FB_DATABASE`
+- production on Windows Server 2022: keep `FB_MODE=network`, set the production host, port, and alias or full `.FDB` path
+- local `.FDB` copy: set `FB_MODE=local` and point `FB_LOCAL_COPY_PATH` to the file
+- the `FB_*` section is optional: if it is missing or Firebird is unavailable, CSV files are still written to SMB and only the `CMAIL` import is skipped with a warning in the log
 
 ### Installation
 ```bash
@@ -160,10 +206,24 @@ source .venv/bin/activate
 python -m remote_ricoh.run --env-file .env
 ```
 
-SMB diagnostics only (no Ricoh login):
+SMB + Firebird diagnostics only (no Ricoh login):
 ```bash
 source .venv/bin/activate
 python -m remote_ricoh.run --env-file .env --dry-run
+```
+
+Post-download mode for an already downloaded `DPLAC.csv`:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --dplac-csv /path/to/DPLAC.csv
+```
+
+Post-download mode with optional `DPLAC_Not_obtained.csv`:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env \
+  --dplac-csv /path/to/DPLAC.csv \
+  --dplac-not-obtained-csv /path/to/DPLAC_Not_obtained.csv
 ```
 
 Exit codes:

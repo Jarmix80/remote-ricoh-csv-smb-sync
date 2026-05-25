@@ -25,6 +25,9 @@ description = "Automatyczne pobieranie CSV licznikow z Ricoh i zapis na SMB"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "fdb",
+  "firebirdsql",
+  "passlib",
   "playwright==1.53.0",
   "python-dotenv==1.0.1",
   "smbprotocol==1.15.0"
