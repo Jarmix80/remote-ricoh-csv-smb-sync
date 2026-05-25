@@ -27,9 +27,9 @@ def test_extract_requested_id_rejects_short_numeric_value() -> None:
 
 def test_extract_requested_ids_from_records_with_key_variants() -> None:
     html = (
-        '<script>let records = '
+        "<script>let records = "
         '[{"requestedId":"20260506132047398"}, {"RequestedID": "20260506132047399"}]'
-        ';</script>'
+        ";</script>"
     )
 
     out = RicohPortalClient._extract_requested_ids_from_html(html)
@@ -50,7 +50,7 @@ def test_extract_requested_ids_from_context_without_records_json() -> None:
 
 def test_find_record_by_requested_id_with_key_variants() -> None:
     html = (
-        '<script>const records = '
+        "<script>const records = "
         '[{"RequestID":"20260506132047401","status":"Completed","fileName":"x.zip"}]'
         ";</script>"
     )
