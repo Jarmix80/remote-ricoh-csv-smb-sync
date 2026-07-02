@@ -8,7 +8,7 @@ Automatyczne pobieranie licznikow CSV z portalu Ricoh, zapis na udziale SMB oraz
 ### Co robi proces
 1. Start z `https://nslep.osp.ricoh.co.jp/atremotecenter/RequestCsv.aspx`.
 2. Przejscie przez logowanie ADFS (krok `Partner` + formularz logowania).
-3. Ustawienie zakresu dat na dzien biezacy (`MM/DD/YYYY` od-do).
+3. Ustawienie zakresu dat od wczoraj do dzis (`MM/DD/YYYY` od-do).
 4. Klikniecie `Request` i utworzenie zadania CSV.
 5. Monitoring `MyHome` (odswiezanie `SearchMyRequest`) do statusu `Completed`.
 6. Pobranie ZIP i rozpakowanie plikow:
@@ -102,6 +102,27 @@ python -m remote_ricoh.run --env-file .env \
   --dplac-not-obtained-csv /sciezka/do/DPLAC_Not_obtained.csv
 ```
 
+Dry-run usuwania urzadzen Ricoh po numerach seryjnych:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --delete-devices seriale.txt
+```
+
+Realne usuniecie wymaga jawnej flagi:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --delete-devices seriale.txt --execute-delete
+```
+
+Plik `seriale.txt` zawiera jeden numer seryjny w linii. Obslugiwany jest tez CSV
+z jedna kolumna albo kolumna `serial`. Raport zapisywany jest lokalnie w
+`.debug/ricoh_device_delete/` i zawiera kolumny `requested_status` oraz
+`last_report_time`. Automat nie usuwa urzadzenia, jesli `Last Report Date/Time`
+jest z ostatnich 3 miesiecy albo nie da sie poprawnie odczytac tej daty. Po
+przyjeciu zlecenia usuniecia portal przechodzi przez `Requested Status = Removing`;
+automat monitoruje ten stan do znikniecia urzadzenia albo zapisuje `delete_pending`
+po timeoutcie.
+
 Kody wyjscia:
 - `0` sukces
 - `1` blad wykonania
@@ -110,11 +131,14 @@ Kody wyjscia:
 
 ### Cron
 Instalacja wpisow cron:
-- codziennie o `06:00`
-- oraz po restarcie serwera (`@reboot`, start po 180s)
+- codziennie o `06:00` pelny proces pobrania i importu
+- po restarcie serwera (`@reboot`, start po 180s) diagnostyka `--dry-run` bez logowania Ricoh
 ```bash
 ./scripts/install_cron.sh
 ```
+
+Przy bledzie portalu przed odczytem `Requested ID` lokalne snapshoty diagnostyczne sa
+zapisywane w `.debug/ricoh_portal/`.
 
 ### Testy i jakosc
 ```bash
@@ -132,7 +156,7 @@ Automatic download of Ricoh meter CSV files, saving them to an SMB share, and im
 ### What the process does
 1. Starts from `https://nslep.osp.ricoh.co.jp/atremotecenter/RequestCsv.aspx`.
 2. Goes through ADFS login flow (`Partner` step + login form).
-3. Sets date range to current day (`MM/DD/YYYY`, from-to).
+3. Sets date range from yesterday to today (`MM/DD/YYYY`, from-to).
 4. Clicks `Request` to create CSV job.
 5. Monitors `MyHome` (refresh via `SearchMyRequest`) until status is `Completed`.
 6. Downloads ZIP and extracts:
@@ -226,6 +250,27 @@ python -m remote_ricoh.run --env-file .env \
   --dplac-not-obtained-csv /path/to/DPLAC_Not_obtained.csv
 ```
 
+Dry-run Ricoh device deletion by serial numbers:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --delete-devices serials.txt
+```
+
+Actual deletion requires an explicit flag:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --delete-devices serials.txt --execute-delete
+```
+
+`serials.txt` contains one serial number per line. CSV is also supported with a single
+column or a `serial` column. The local report is written to
+`.debug/ricoh_device_delete/` and includes the `requested_status` and
+`last_report_time` columns. The automation does not delete a device if
+`Last Report Date/Time` is within the last 3 months or cannot be parsed. After the
+delete request is accepted, the portal goes through `Requested Status = Removing`;
+the automation monitors this state until the device disappears or writes
+`delete_pending` after timeout.
+
 Exit codes:
 - `0` success
 - `1` runtime error
@@ -234,11 +279,14 @@ Exit codes:
 
 ### Cron
 Install cron entries:
-- daily at `06:00`
-- and after server restart (`@reboot`, starts after 180s)
+- daily at `06:00` for the full download and import process
+- after server restart (`@reboot`, starts after 180s) for `--dry-run` diagnostics without Ricoh login
 ```bash
 ./scripts/install_cron.sh
 ```
+
+When the portal fails before a `Requested ID` is read, local diagnostic snapshots are
+written to `.debug/ricoh_portal/`.
 
 ### Tests and quality
 ```bash

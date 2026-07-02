@@ -14,6 +14,7 @@ from .config import (
     log_file_name_for_today,
     today_suffix,
 )
+from .device_delete import DeviceDeleteReportRow, load_delete_serials, write_delete_report
 from .firebird_cmail import FirebirdCmailImporter
 from .portal import RicohPortalClient
 from .smb_io import SmbClient
@@ -140,6 +141,29 @@ class Runner:
             logger.info("DRY-RUN: zakonczono sukcesem.")
         return 0
 
+    def run_delete_devices(self, serials_path: Path, execute_delete: bool) -> int:
+        """Wyszukuje i opcjonalnie usuwa urzadzenia Ricoh z listy numerow seryjnych."""
+        serials = load_delete_serials(serials_path)
+        if not serials:
+            raise ValueError(f"Brak numerow seryjnych w pliku: {serials_path}")
+
+        logger = _ConsoleLogger()
+        mode = "EXECUTE" if execute_delete else "DRY-RUN"
+        logger.info(f"Start trybu usuwania urzadzen Ricoh: tryb={mode}, seriale={len(serials)}.")
+
+        client = RicohPortalClient(
+            login=self.settings.login_ricoh,
+            password=self.settings.pass_ricoh,
+            poll_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+            poll_interval_seconds=POLL_INTERVAL_SECONDS,
+            headless=True,
+        )
+        rows = client.delete_devices_by_serials(serials, execute_delete, logger.info)
+        report_path = write_delete_report(rows)
+        logger.info(f"Raport usuwania urzadzen Ricoh: {report_path.resolve()}")
+        logger.info(_summarize_delete_report(rows))
+        return 0
+
     def _build_firebird_importer(self) -> FirebirdCmailImporter | None:
         if not self.settings.firebird_enabled:
             return None
@@ -214,3 +238,19 @@ class _SmbLogger:
     def info(self, message: str) -> None:
         print(message)
         self.smb.append_log_line(["log", self.log_name], message)
+
+
+@dataclass(slots=True)
+class _ConsoleLogger:
+    """Logger tylko na stdout dla trybow bez SMB."""
+
+    def info(self, message: str) -> None:
+        print(message)
+
+
+def _summarize_delete_report(rows: list[DeviceDeleteReportRow]) -> str:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.status] = counts.get(row.status, 0) + 1
+    parts = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+    return f"Podsumowanie usuwania urzadzen Ricoh: {parts or 'brak wynikow'}."

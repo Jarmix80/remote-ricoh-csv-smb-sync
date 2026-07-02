@@ -159,6 +159,127 @@ def test_main_downloaded_csv_path(tmp_path: Path, monkeypatch) -> None:
     assert captured == {"dplac": dplac_csv, "dplac_no": None}
 
 
+def test_main_delete_devices_defaults_to_dry_run(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    serials = tmp_path / "serials.txt"
+    serials.write_text("T575H403598\n", encoding="utf-8")
+    captured: dict[str, Path | bool | None] = {"path": None, "execute": None}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_dry(self) -> int:
+            return 99
+
+        def run_delete_devices(self, serials_path: Path, execute_delete: bool) -> int:
+            captured["path"] = serials_path
+            captured["execute"] = execute_delete
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--delete-devices",
+            str(serials),
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"path": serials, "execute": False}
+
+
+def test_main_delete_devices_execute_flag(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    serials = tmp_path / "serials.txt"
+    serials.write_text("T575H403598\n", encoding="utf-8")
+    captured: dict[str, bool | None] = {"execute": None}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_delete_devices(self, serials_path: Path, execute_delete: bool) -> int:
+            captured["execute"] = execute_delete
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--delete-devices",
+            str(serials),
+            "--execute-delete",
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"execute": True}
+
+
+def test_main_requires_delete_devices_for_execute_delete(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["run", "--env-file", str(env_file), "--lock-file", str(lock_file), "--execute-delete"],
+    )
+
+    code = run.main()
+
+    assert code == 2
+
+
 def test_main_requires_dplac_csv_for_not_obtained_option(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
     lock_file = tmp_path / "remote_ricoh.lock"

@@ -33,9 +33,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--dplac-csv",
         help="Sciezka do juz pobranego DPLAC CSV; uruchamia tylko etap SMB + Firebird.",
     )
+    mode_group.add_argument(
+        "--delete-devices",
+        help=(
+            "Sciezka do TXT/CSV z numerami seryjnymi urzadzen Ricoh. "
+            "Domyslnie wykonuje dry-run i zapisuje raport lokalny."
+        ),
+    )
     parser.add_argument(
         "--dplac-not-obtained-csv",
         help="Opcjonalna sciezka do DPLAC_Not_obtained CSV dla trybu --dplac-csv.",
+    )
+    parser.add_argument(
+        "--execute-delete",
+        action="store_true",
+        help="Wykonuje realne usuniecie dla trybu --delete-devices. Bez tej flagi jest dry-run.",
     )
     return parser
 
@@ -49,6 +61,9 @@ def main() -> int:
 
     if args.dplac_not_obtained_csv and not args.dplac_csv:
         print("BLAD konfiguracji: --dplac-not-obtained-csv wymaga --dplac-csv.")
+        return 2
+    if args.execute_delete and not args.delete_devices:
+        print("BLAD konfiguracji: --execute-delete wymaga --delete-devices.")
         return 2
 
     try:
@@ -67,6 +82,8 @@ def main() -> int:
                     Path(args.dplac_not_obtained_csv) if args.dplac_not_obtained_csv else None
                 )
                 return runner.run_downloaded_csv(Path(args.dplac_csv), dplac_not_obtained)
+            if args.delete_devices:
+                return runner.run_delete_devices(Path(args.delete_devices), args.execute_delete)
             return runner.run()
     except AlreadyRunningError as exc:
         print(f"INFO: {exc}")

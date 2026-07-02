@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from remote_ricoh.config import Settings
+from remote_ricoh.device_delete import DeviceDeleteReportRow
 from remote_ricoh.service import Runner
 
 
@@ -354,3 +355,45 @@ def test_runner_run_downloaded_csv_writes_smb_and_imports_firebird(
         ("smb", "DPLAC_Not_obtained_22-05-2026.csv"),
         ("firebird", "manual_DPLAC.csv"),
     ]
+
+
+def test_runner_run_delete_devices_writes_report(monkeypatch, tmp_path: Path) -> None:
+    serials_file = tmp_path / "serials.txt"
+    serials_file.write_text("T575H403598\nABC123\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakePortalClient:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            captured["client_kwargs"] = kwargs
+
+        def delete_devices_by_serials(self, serials, execute_delete, log):  # noqa: ANN001
+            captured["serials"] = serials
+            captured["execute_delete"] = execute_delete
+            log("fake delete")
+            return [
+                DeviceDeleteReportRow(
+                    serial=serials[0],
+                    status="would_delete",
+                    matched_count=1,
+                    device_id=serials[0],
+                ),
+                DeviceDeleteReportRow(
+                    serial=serials[1],
+                    status="not_found",
+                    matched_count=0,
+                ),
+            ]
+
+    def fake_write_report(rows):  # noqa: ANN001, ANN202
+        captured["rows"] = rows
+        return tmp_path / "report.csv"
+
+    monkeypatch.setattr("remote_ricoh.service.RicohPortalClient", FakePortalClient)
+    monkeypatch.setattr("remote_ricoh.service.write_delete_report", fake_write_report)
+
+    code = Runner(_build_settings()).run_delete_devices(serials_file, execute_delete=False)
+
+    assert code == 0
+    assert captured["serials"] == ["T575H403598", "ABC123"]
+    assert captured["execute_delete"] is False
+    assert [row.status for row in captured["rows"]] == ["would_delete", "not_found"]

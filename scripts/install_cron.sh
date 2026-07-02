@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_CMD="${REPO_DIR}/.venv/bin/python -m remote_ricoh.run --env-file ${REPO_DIR}/.env"
 DAILY_CRON_LINE="0 6 * * * cd ${REPO_DIR} && ${RUN_CMD} >> ${REPO_DIR}/logs/cron.log 2>&1 # remote_ricoh_daily"
-REBOOT_CRON_LINE="@reboot /bin/bash -lc 'sleep 180; cd ${REPO_DIR} && ${RUN_CMD} >> ${REPO_DIR}/logs/cron.log 2>&1' # remote_ricoh_reboot"
+REBOOT_CRON_LINE="@reboot /bin/bash -lc 'sleep 180; cd ${REPO_DIR} && ${RUN_CMD} --dry-run >> ${REPO_DIR}/logs/cron.log 2>&1' # remote_ricoh_reboot"
 
 mkdir -p "${REPO_DIR}/logs"
 
