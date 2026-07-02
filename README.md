@@ -123,6 +123,45 @@ przyjeciu zlecenia usuniecia portal przechodzi przez `Requested Status = Removin
 automat monitoruje ten stan do znikniecia urzadzenia albo zapisuje `delete_pending`
 po timeoutcie.
 
+Snapshot zlecen serwisowych Firebird przed reczna weryfikacja:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --service-order-snapshot zlecenia.txt
+```
+
+Porownanie snapshotow po recznym zamknieciu przykladowego zlecenia:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env \
+  --service-order-diff before.csv after.csv
+```
+
+Dry-run dopisania wykonania i zamkniecia zlecen:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env \
+  --close-service-orders zlecenia.txt \
+  --remote-status-report .debug/ricoh_device_delete/final_batch_report_YYYYMMDD_HHMMSS.csv
+```
+
+Realny zapis wymaga flagi oraz jawnej zmiennej ochronnej:
+```bash
+source .venv/bin/activate
+FB_ALLOW_WRITES=1 python -m remote_ricoh.run --env-file .env \
+  --close-service-orders zlecenia.txt \
+  --remote-status-report .debug/ricoh_device_delete/final_batch_report_YYYYMMDD_HHMMSS.csv \
+  --execute-service-orders
+```
+
+`zlecenia.txt` moze zawierac `14331/2025`, `serial:G696M313134` albo
+`problem:odpiąć REMOTE`. CSV obsluguje kolumny `order`, `serial`,
+`problem_contains` i `allow_multiple`. Zlecenia sa identyfikowane po
+`ZLECENIE.ID_ZLECENIE + ROK`, a raporty zapisywane sa w
+`.debug/ricoh_service_orders/`. Automat dopisuje do `WYKONANIE` tekst
+`Urządzenie usunięte z Remote.`, przechodzi przez `STAN='ZR'`, finalnie ustawia
+`STAN='Z'` i `DATA_Z=CURRENT_DATE`, a do `OPERATOR` dopisuje
+`Edytował: Marcin,Zamknął :Marcin`; nie zmienia `TECHNIK`.
+
 Kody wyjscia:
 - `0` sukces
 - `1` blad wykonania
@@ -270,6 +309,44 @@ column or a `serial` column. The local report is written to
 delete request is accepted, the portal goes through `Requested Status = Removing`;
 the automation monitors this state until the device disappears or writes
 `delete_pending` after timeout.
+
+Firebird service order snapshot before manual verification:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --service-order-snapshot orders.txt
+```
+
+Compare snapshots after manually closing an example order:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env \
+  --service-order-diff before.csv after.csv
+```
+
+Dry-run adding repair text and closing service orders:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env \
+  --close-service-orders orders.txt \
+  --remote-status-report .debug/ricoh_device_delete/final_batch_report_YYYYMMDD_HHMMSS.csv
+```
+
+Actual writes require an explicit flag and guard environment variable:
+```bash
+source .venv/bin/activate
+FB_ALLOW_WRITES=1 python -m remote_ricoh.run --env-file .env \
+  --close-service-orders orders.txt \
+  --remote-status-report .debug/ricoh_device_delete/final_batch_report_YYYYMMDD_HHMMSS.csv \
+  --execute-service-orders
+```
+
+`orders.txt` may contain `14331/2025`, `serial:G696M313134`, or
+`problem:odpiąć REMOTE`. CSV supports `order`, `serial`, `problem_contains`, and
+`allow_multiple` columns. Orders are identified by `ZLECENIE.ID_ZLECENIE + ROK`,
+and local reports are written to `.debug/ricoh_service_orders/`. The automation
+appends `Urządzenie usunięte z Remote.` to `WYKONANIE`, transitions through
+`STAN='ZR'`, then sets `STAN='Z'` and `DATA_Z=CURRENT_DATE`, and appends
+`Edytował: Marcin,Zamknął :Marcin` to `OPERATOR`; it does not change `TECHNIK`.
 
 Exit codes:
 - `0` success

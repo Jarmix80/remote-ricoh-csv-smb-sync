@@ -97,9 +97,12 @@ class RicohPortalClient:
         serials: list[str],
         execute_delete: bool,
         log: Callable[[str], None],
+        allow_recent_serials: set[str] | None = None,
+        allow_recent_before: datetime | None = None,
     ) -> list[DeviceDeleteReportRow]:
         """Wyszukuje i opcjonalnie usuwa urzadzenia po numerach seryjnych."""
         results: list[DeviceDeleteReportRow] = []
+        allow_recent_keys = {serial.casefold() for serial in allow_recent_serials or set()}
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=self.headless)
@@ -114,7 +117,14 @@ class RicohPortalClient:
                 for serial in serials:
                     try:
                         results.append(
-                            self._process_device_delete_serial(page, serial, execute_delete, log)
+                            self._process_device_delete_serial(
+                                page,
+                                serial,
+                                execute_delete,
+                                log,
+                                allow_recent=serial.casefold() in allow_recent_keys,
+                                allow_recent_before=allow_recent_before,
+                            )
                         )
                     except Exception as exc:  # noqa: BLE001
                         self._capture_debug_snapshot(
@@ -372,6 +382,9 @@ class RicohPortalClient:
         serial: str,
         execute_delete: bool,
         log: Callable[[str], None],
+        *,
+        allow_recent: bool = False,
+        allow_recent_before: datetime | None = None,
     ) -> DeviceDeleteReportRow:
         matches = self._search_device_by_serial(page, serial, log)
         if not matches:
@@ -430,40 +443,61 @@ class RicohPortalClient:
 
         cutoff = self._subtract_months(datetime.now(), 3)
         if last_report_time.date() >= cutoff.date():
-            log(
-                f"DELETE: {serial}: Last Report Date/Time={match.last_report_time} "
-                "jest z ostatnich 3 miesiecy, nie usuwam."
+            allow_recent_by_time = (
+                allow_recent_before is None or last_report_time < allow_recent_before
             )
-            return DeviceDeleteReportRow(
-                serial=serial,
-                status="skipped_recent_report",
-                matched_count=1,
-                device_id=match.device_id,
-                model=match.model,
-                customer=match.customer,
-                requested_status=match.requested_status,
-                last_report_time=match.last_report_time,
-                message=(
+            if not allow_recent or not allow_recent_by_time:
+                message = (
                     "Pominieto: Last Report Date/Time jest z ostatnich 3 miesiecy "
                     f"(prog: {cutoff.date().isoformat()})."
-                ),
+                )
+                if allow_recent and not allow_recent_by_time:
+                    message = (
+                        "Pominieto: Last Report Date/Time nie jest wczesniejszy niz "
+                        f"jawny prog {allow_recent_before:%Y/%m/%d %H:%M}."
+                    )
+                log(
+                    f"DELETE: {serial}: Last Report Date/Time={match.last_report_time} "
+                    f"{message}"
+                )
+                return DeviceDeleteReportRow(
+                    serial=serial,
+                    status="skipped_recent_report",
+                    matched_count=1,
+                    device_id=match.device_id,
+                    model=match.model,
+                    customer=match.customer,
+                    requested_status=match.requested_status,
+                    last_report_time=match.last_report_time,
+                    message=message,
+                )
+            log(
+                f"DELETE: {serial}: Last Report Date/Time={match.last_report_time} "
+                "jest z ostatnich 3 miesiecy, ale serial jest na liscie jawnego obejscia."
             )
 
         if not execute_delete:
             log(f"DELETE dry-run: {serial}: znaleziono {match.device_id}, bez usuwania.")
+            status = "would_delete_recent_override" if allow_recent else "would_delete"
+            reason = (
+                "Dry-run: urzadzenie kwalifikuje sie do usuniecia przez jawne obejscie "
+                "zabezpieczenia Last Report Date/Time."
+                if allow_recent
+                else (
+                    "Dry-run: urzadzenie kwalifikuje sie do usuniecia; "
+                    "Last Report Date/Time jest starszy niz 3 miesiace."
+                )
+            )
             return DeviceDeleteReportRow(
                 serial=serial,
-                status="would_delete",
+                status=status,
                 matched_count=1,
                 device_id=match.device_id,
                 model=match.model,
                 customer=match.customer,
                 requested_status=match.requested_status,
                 last_report_time=match.last_report_time,
-                message=(
-                    "Dry-run: urzadzenie kwalifikuje sie do usuniecia; "
-                    "Last Report Date/Time jest starszy niz 3 miesiace."
-                ),
+                message=reason,
             )
 
         log(f"DELETE execute: {serial}: usuwam {match.device_id}.")

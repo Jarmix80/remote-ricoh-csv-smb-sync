@@ -6,6 +6,11 @@ from pathlib import Path
 from remote_ricoh.config import Settings
 from remote_ricoh.device_delete import DeviceDeleteReportRow
 from remote_ricoh.service import Runner
+from remote_ricoh.service_orders import (
+    ServiceOrderActionRow,
+    ServiceOrderDiffRow,
+    ServiceOrderRow,
+)
 
 
 def _build_settings() -> Settings:
@@ -366,9 +371,18 @@ def test_runner_run_delete_devices_writes_report(monkeypatch, tmp_path: Path) ->
         def __init__(self, **kwargs) -> None:  # noqa: ANN003
             captured["client_kwargs"] = kwargs
 
-        def delete_devices_by_serials(self, serials, execute_delete, log):  # noqa: ANN001
+        def delete_devices_by_serials(  # noqa: ANN001
+            self,
+            serials,
+            execute_delete,
+            log,
+            allow_recent_serials=None,
+            allow_recent_before=None,
+        ):
             captured["serials"] = serials
             captured["execute_delete"] = execute_delete
+            captured["allow_recent_serials"] = allow_recent_serials
+            captured["allow_recent_before"] = allow_recent_before
             log("fake delete")
             return [
                 DeviceDeleteReportRow(
@@ -396,4 +410,124 @@ def test_runner_run_delete_devices_writes_report(monkeypatch, tmp_path: Path) ->
     assert code == 0
     assert captured["serials"] == ["T575H403598", "ABC123"]
     assert captured["execute_delete"] is False
+    assert captured["allow_recent_serials"] == set()
+    assert captured["allow_recent_before"] is None
     assert [row.status for row in captured["rows"]] == ["would_delete", "not_found"]
+
+
+def test_runner_service_order_snapshot_writes_report(monkeypatch, tmp_path: Path) -> None:
+    filters_file = tmp_path / "orders.txt"
+    filters_file.write_text("14331/2025\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def snapshot(self, filters):  # noqa: ANN001, ANN201
+            captured["filters"] = filters
+            return [
+                ServiceOrderRow(
+                    filter_key=filters[0].key,
+                    id_zlecenie_table=79331,
+                    id_zlecenie=14331,
+                    rok=2025,
+                    stan="O",
+                )
+            ]
+
+    def fake_build_client(self):  # noqa: ANN001, ANN202
+        return FakeClient()
+
+    def fake_write_snapshot(rows):  # noqa: ANN001, ANN202
+        captured["rows"] = rows
+        return tmp_path / "snapshot.csv"
+
+    monkeypatch.setattr(Runner, "_build_service_order_client", fake_build_client)
+    monkeypatch.setattr("remote_ricoh.service.write_service_order_snapshot", fake_write_snapshot)
+
+    code = Runner(_build_settings()).run_service_order_snapshot(filters_file)
+
+    assert code == 0
+    assert [item.key for item in captured["filters"]] == ["14331/2025"]
+    assert [row.order_label for row in captured["rows"]] == ["14331/2025"]
+
+
+def test_runner_close_service_orders_passes_remote_statuses(monkeypatch, tmp_path: Path) -> None:
+    filters_file = tmp_path / "orders.txt"
+    filters_file.write_text("14331/2025\n", encoding="utf-8")
+    remote_report = tmp_path / "remote.csv"
+    remote_report.write_text("serial,final_status\nG696M313134,not_found\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def close_orders(self, filters, *, execute, remote_statuses):  # noqa: ANN001, ANN201
+            captured["filters"] = filters
+            captured["execute"] = execute
+            captured["remote_statuses"] = remote_statuses
+            return [
+                ServiceOrderActionRow(
+                    filter_key=filters[0].key,
+                    status="would_close",
+                    matched_count=1,
+                    order="14331/2025",
+                    serial="G696M313134",
+                )
+            ]
+
+    def fake_build_client(self):  # noqa: ANN001, ANN202
+        return FakeClient()
+
+    def fake_write_report(rows):  # noqa: ANN001, ANN202
+        captured["rows"] = rows
+        return tmp_path / "close_report.csv"
+
+    monkeypatch.setattr(Runner, "_build_service_order_client", fake_build_client)
+    monkeypatch.setattr(
+        "remote_ricoh.service.write_service_order_action_report",
+        fake_write_report,
+    )
+
+    code = Runner(_build_settings()).run_close_service_orders(
+        filters_file,
+        execute_service_orders=False,
+        remote_status_report=remote_report,
+    )
+
+    assert code == 0
+    assert captured["execute"] is False
+    assert captured["remote_statuses"] == {"g696m313134": "not_found"}
+    assert [row.status for row in captured["rows"]] == ["would_close"]
+
+
+def test_runner_service_order_diff_writes_report(monkeypatch, tmp_path: Path) -> None:
+    before = tmp_path / "before.csv"
+    after = tmp_path / "after.csv"
+    before.write_text("x", encoding="utf-8")
+    after.write_text("x", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_diff(before_path: Path, after_path: Path):  # noqa: ANN202
+        captured["before_path"] = before_path
+        captured["after_path"] = after_path
+        return [
+            ServiceOrderDiffRow(
+                id_zlecenie_table="79331",
+                order="14331/2025",
+                serial="G696M313134",
+                field="stan",
+                before="O",
+                after="Z",
+            )
+        ]
+
+    def fake_write_diff(rows):  # noqa: ANN001, ANN202
+        captured["rows"] = rows
+        return tmp_path / "diff.csv"
+
+    monkeypatch.setattr("remote_ricoh.service.diff_service_order_snapshots", fake_diff)
+    monkeypatch.setattr("remote_ricoh.service.write_service_order_diff", fake_write_diff)
+
+    code = Runner(_build_settings()).run_service_order_diff(before, after)
+
+    assert code == 0
+    assert captured["before_path"] == before
+    assert captured["after_path"] == after
+    assert [row.field for row in captured["rows"]] == ["stan"]

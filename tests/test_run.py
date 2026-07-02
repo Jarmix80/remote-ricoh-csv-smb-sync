@@ -186,9 +186,17 @@ def test_main_delete_devices_defaults_to_dry_run(tmp_path: Path, monkeypatch) ->
         def run_dry(self) -> int:
             return 99
 
-        def run_delete_devices(self, serials_path: Path, execute_delete: bool) -> int:
+        def run_delete_devices(
+            self,
+            serials_path: Path,
+            execute_delete: bool,
+            allow_recent_delete_serials_path: Path | None = None,
+            allow_recent_delete_before=None,  # noqa: ANN001
+        ) -> int:
             captured["path"] = serials_path
             captured["execute"] = execute_delete
+            captured["allow_recent"] = allow_recent_delete_serials_path
+            captured["allow_recent_before"] = allow_recent_delete_before
             return 0
 
         def run(self) -> int:
@@ -211,7 +219,12 @@ def test_main_delete_devices_defaults_to_dry_run(tmp_path: Path, monkeypatch) ->
     code = run.main()
 
     assert code == 0
-    assert captured == {"path": serials, "execute": False}
+    assert captured == {
+        "path": serials,
+        "execute": False,
+        "allow_recent": None,
+        "allow_recent_before": None,
+    }
 
 
 def test_main_delete_devices_execute_flag(tmp_path: Path, monkeypatch) -> None:
@@ -238,8 +251,16 @@ def test_main_delete_devices_execute_flag(tmp_path: Path, monkeypatch) -> None:
         def __init__(self, settings) -> None:  # noqa: ANN001
             self.settings = settings
 
-        def run_delete_devices(self, serials_path: Path, execute_delete: bool) -> int:
+        def run_delete_devices(
+            self,
+            serials_path: Path,
+            execute_delete: bool,
+            allow_recent_delete_serials_path: Path | None = None,
+            allow_recent_delete_before=None,  # noqa: ANN001
+        ) -> int:
             captured["execute"] = execute_delete
+            captured["allow_recent"] = allow_recent_delete_serials_path
+            captured["allow_recent_before"] = allow_recent_delete_before
             return 0
 
         def run(self) -> int:
@@ -263,7 +284,83 @@ def test_main_delete_devices_execute_flag(tmp_path: Path, monkeypatch) -> None:
     code = run.main()
 
     assert code == 0
-    assert captured == {"execute": True}
+    assert captured == {"execute": True, "allow_recent": None, "allow_recent_before": None}
+
+
+def test_main_delete_devices_recent_override_path(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    serials = tmp_path / "serials.txt"
+    serials.write_text("T575H403598\n", encoding="utf-8")
+    allow_recent = tmp_path / "allow_recent.txt"
+    allow_recent.write_text("T575H403598\n", encoding="utf-8")
+    captured: dict[str, Path | bool | None] = {
+        "path": None,
+        "execute": None,
+        "allow_recent": None,
+        "allow_recent_before": None,
+    }
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_delete_devices(
+            self,
+            serials_path: Path,
+            execute_delete: bool,
+            allow_recent_delete_serials_path: Path | None = None,
+            allow_recent_delete_before=None,  # noqa: ANN001
+        ) -> int:
+            captured["path"] = serials_path
+            captured["execute"] = execute_delete
+            captured["allow_recent"] = allow_recent_delete_serials_path
+            captured["allow_recent_before"] = allow_recent_delete_before
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--delete-devices",
+            str(serials),
+            "--allow-recent-delete-serials",
+            str(allow_recent),
+            "--allow-recent-delete-before",
+            "2026/06/07 08:26",
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {
+        "path": serials,
+        "execute": False,
+        "allow_recent": allow_recent,
+        "allow_recent_before": run.datetime(2026, 6, 7, 8, 26),
+    }
 
 
 def test_main_requires_delete_devices_for_execute_delete(tmp_path: Path, monkeypatch) -> None:
@@ -300,4 +397,232 @@ def test_main_requires_dplac_csv_for_not_obtained_option(tmp_path: Path, monkeyp
     )
 
     code = run.main()
+    assert code == 2
+
+
+def test_main_service_order_snapshot_path(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+                "FB_MODE=network",
+                "FB_HOST=127.0.0.1",
+                "FB_DATABASE=BAZAMS_TEST",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    filters = tmp_path / "orders.txt"
+    filters.write_text("14331/2025\n", encoding="utf-8")
+    captured: dict[str, Path | None] = {"path": None}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_service_order_snapshot(self, filters_path: Path) -> int:
+            captured["path"] = filters_path
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--service-order-snapshot",
+            str(filters),
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"path": filters}
+
+
+def test_main_close_service_orders_execute_and_remote_report(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+                "FB_MODE=network",
+                "FB_HOST=127.0.0.1",
+                "FB_DATABASE=BAZAMS_TEST",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    filters = tmp_path / "orders.txt"
+    filters.write_text("14331/2025\n", encoding="utf-8")
+    remote_report = tmp_path / "remote.csv"
+    remote_report.write_text("serial,final_status\nG696M313134,not_found\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_close_service_orders(
+            self,
+            filters_path: Path,
+            execute_service_orders: bool,
+            remote_status_report: Path | None,
+        ) -> int:
+            captured["filters_path"] = filters_path
+            captured["execute_service_orders"] = execute_service_orders
+            captured["remote_status_report"] = remote_status_report
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--close-service-orders",
+            str(filters),
+            "--execute-service-orders",
+            "--remote-status-report",
+            str(remote_report),
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {
+        "filters_path": filters,
+        "execute_service_orders": True,
+        "remote_status_report": remote_report,
+    }
+
+
+def test_main_service_order_diff_path(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = tmp_path / "before.csv"
+    after = tmp_path / "after.csv"
+    before.write_text("x", encoding="utf-8")
+    after.write_text("x", encoding="utf-8")
+    captured: dict[str, Path | None] = {"before": None, "after": None}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_service_order_diff(self, before_path: Path, after_path: Path) -> int:
+            captured["before"] = before_path
+            captured["after"] = after_path
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--service-order-diff",
+            str(before),
+            str(after),
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"before": before, "after": after}
+
+
+def test_main_requires_close_service_orders_for_execute_service_orders(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--execute-service-orders",
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 2
+
+
+def test_main_requires_close_service_orders_for_remote_status_report(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    remote_report = tmp_path / "remote.csv"
+    env_file.write_text("", encoding="utf-8")
+    remote_report.write_text("serial,final_status\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--remote-status-report",
+            str(remote_report),
+        ],
+    )
+
+    code = run.main()
+
     assert code == 2

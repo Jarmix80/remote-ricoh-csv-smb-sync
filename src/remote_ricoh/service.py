@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .config import (
@@ -17,6 +18,18 @@ from .config import (
 from .device_delete import DeviceDeleteReportRow, load_delete_serials, write_delete_report
 from .firebird_cmail import FirebirdCmailImporter
 from .portal import RicohPortalClient
+from .service_orders import (
+    FirebirdServiceOrderClient,
+    ServiceOrderActionRow,
+    ServiceOrderDiffRow,
+    ServiceOrderRow,
+    diff_service_order_snapshots,
+    load_remote_final_statuses,
+    load_service_order_filters,
+    write_service_order_action_report,
+    write_service_order_diff,
+    write_service_order_snapshot,
+)
 from .smb_io import SmbClient
 from .zip_processing import extract_meter_csvs
 
@@ -141,15 +154,36 @@ class Runner:
             logger.info("DRY-RUN: zakonczono sukcesem.")
         return 0
 
-    def run_delete_devices(self, serials_path: Path, execute_delete: bool) -> int:
+    def run_delete_devices(
+        self,
+        serials_path: Path,
+        execute_delete: bool,
+        allow_recent_delete_serials_path: Path | None = None,
+        allow_recent_delete_before: datetime | None = None,
+    ) -> int:
         """Wyszukuje i opcjonalnie usuwa urzadzenia Ricoh z listy numerow seryjnych."""
         serials = load_delete_serials(serials_path)
         if not serials:
             raise ValueError(f"Brak numerow seryjnych w pliku: {serials_path}")
+        allow_recent_serials = (
+            set(load_delete_serials(allow_recent_delete_serials_path))
+            if allow_recent_delete_serials_path is not None
+            else set()
+        )
 
         logger = _ConsoleLogger()
         mode = "EXECUTE" if execute_delete else "DRY-RUN"
         logger.info(f"Start trybu usuwania urzadzen Ricoh: tryb={mode}, seriale={len(serials)}.")
+        if allow_recent_serials:
+            logger.info(
+                "Jawne obejscie zabezpieczenia Last Report Date/Time: "
+                f"seriale={len(allow_recent_serials)}."
+            )
+            if allow_recent_delete_before is not None:
+                logger.info(
+                    "Jawne obejscie ograniczone do Last Report Date/Time < "
+                    f"{allow_recent_delete_before:%Y/%m/%d %H:%M}."
+                )
 
         client = RicohPortalClient(
             login=self.settings.login_ricoh,
@@ -158,16 +192,91 @@ class Runner:
             poll_interval_seconds=POLL_INTERVAL_SECONDS,
             headless=True,
         )
-        rows = client.delete_devices_by_serials(serials, execute_delete, logger.info)
+        rows = client.delete_devices_by_serials(
+            serials,
+            execute_delete,
+            logger.info,
+            allow_recent_serials=allow_recent_serials,
+            allow_recent_before=allow_recent_delete_before,
+        )
         report_path = write_delete_report(rows)
         logger.info(f"Raport usuwania urzadzen Ricoh: {report_path.resolve()}")
         logger.info(_summarize_delete_report(rows))
+        return 0
+
+    def run_service_order_snapshot(self, filters_path: Path) -> int:
+        """Zapisuje snapshot zlecen serwisowych pasujacych do filtrow."""
+        filters = load_service_order_filters(filters_path)
+        if not filters:
+            raise ValueError(f"Brak filtrow zlecen w pliku: {filters_path}")
+
+        logger = _ConsoleLogger()
+        logger.info(f"Start snapshotu zlecen serwisowych: filtry={len(filters)}.")
+        client = self._build_service_order_client()
+        rows = client.snapshot(filters)
+        report_path = write_service_order_snapshot(rows)
+        logger.info(f"Snapshot zlecen serwisowych: {report_path.resolve()}")
+        logger.info(_summarize_service_order_snapshot(rows))
+        return 0
+
+    def run_service_order_diff(self, before_path: Path, after_path: Path) -> int:
+        """Porownuje dwa snapshoty zlecen serwisowych."""
+        logger = _ConsoleLogger()
+        rows = diff_service_order_snapshots(before_path, after_path)
+        report_path = write_service_order_diff(rows)
+        logger.info(f"Diff snapshotow zlecen serwisowych: {report_path.resolve()}")
+        logger.info(_summarize_service_order_diff(rows))
+        return 0
+
+    def run_close_service_orders(
+        self,
+        filters_path: Path,
+        execute_service_orders: bool,
+        remote_status_report: Path | None = None,
+    ) -> int:
+        """Dopisuje wykonanie i opcjonalnie zamyka zlecenia serwisowe."""
+        filters = load_service_order_filters(filters_path)
+        if not filters:
+            raise ValueError(f"Brak filtrow zlecen w pliku: {filters_path}")
+
+        remote_statuses = load_remote_final_statuses(remote_status_report)
+        logger = _ConsoleLogger()
+        mode = "EXECUTE" if execute_service_orders else "DRY-RUN"
+        logger.info(
+            "Start zamykania zlecen serwisowych: "
+            f"tryb={mode}, filtry={len(filters)}, remote_statuses={len(remote_statuses)}."
+        )
+
+        client = self._build_service_order_client()
+        rows = client.close_orders(
+            filters,
+            execute=execute_service_orders,
+            remote_statuses=remote_statuses,
+        )
+        report_path = write_service_order_action_report(rows)
+        logger.info(f"Raport zamykania zlecen serwisowych: {report_path.resolve()}")
+        logger.info(_summarize_service_order_actions(rows))
         return 0
 
     def _build_firebird_importer(self) -> FirebirdCmailImporter | None:
         if not self.settings.firebird_enabled:
             return None
         return FirebirdCmailImporter(
+            mode=self.settings.fb_mode or "network",
+            host=self.settings.fb_host or "",
+            port=self.settings.fb_port or 3050,
+            user=self.settings.fb_user or "",
+            password=self.settings.fb_password or "",
+            database=self.settings.fb_database or "",
+            charset=self.settings.fb_charset or "WIN1250",
+            role=self.settings.fb_role,
+            local_copy_path=self.settings.fb_local_copy_path,
+        )
+
+    def _build_service_order_client(self) -> FirebirdServiceOrderClient:
+        if not self.settings.firebird_enabled:
+            raise ValueError("Brak aktywnej konfiguracji Firebird dla zlecen serwisowych.")
+        return FirebirdServiceOrderClient(
             mode=self.settings.fb_mode or "network",
             host=self.settings.fb_host or "",
             port=self.settings.fb_port or 3050,
@@ -254,3 +363,19 @@ def _summarize_delete_report(rows: list[DeviceDeleteReportRow]) -> str:
         counts[row.status] = counts.get(row.status, 0) + 1
     parts = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
     return f"Podsumowanie usuwania urzadzen Ricoh: {parts or 'brak wynikow'}."
+
+
+def _summarize_service_order_snapshot(rows: list[ServiceOrderRow]) -> str:
+    return f"Podsumowanie snapshotu zlecen serwisowych: rows={len(rows)}."
+
+
+def _summarize_service_order_actions(rows: list[ServiceOrderActionRow]) -> str:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.status] = counts.get(row.status, 0) + 1
+    parts = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+    return f"Podsumowanie zamykania zlecen serwisowych: {parts or 'brak wynikow'}."
+
+
+def _summarize_service_order_diff(rows: list[ServiceOrderDiffRow]) -> str:
+    return f"Podsumowanie diffu zlecen serwisowych: changes={len(rows)}."
