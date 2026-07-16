@@ -5,6 +5,7 @@ from pathlib import Path
 
 from remote_ricoh.config import Settings
 from remote_ricoh.device_delete import DeviceDeleteReportRow
+from remote_ricoh.remote_auto import ORDER_STATUS_WAITING_RECENT, RemoteAutoStore
 from remote_ricoh.service import Runner
 from remote_ricoh.service_orders import (
     ServiceOrderActionRow,
@@ -413,6 +414,65 @@ def test_runner_run_delete_devices_writes_report(monkeypatch, tmp_path: Path) ->
     assert captured["allow_recent_serials"] == set()
     assert captured["allow_recent_before"] is None
     assert [row.status for row in captured["rows"]] == ["would_delete", "not_found"]
+
+
+def test_runner_remote_auto_scan_records_waiting_recent(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "remote_auto.sqlite"
+    remote_order = ServiceOrderRow(
+        filter_key="remote_auto",
+        id_zlecenie_table=70001,
+        id_zlecenie=17001,
+        rok=2026,
+        stan="O",
+        serial="ABC123",
+        problem="odpiąć REMOTE",
+    )
+
+    class FakeServiceOrderClient:
+        def fetch_remote_open_orders(self):  # noqa: ANN201
+            return [remote_order]
+
+    class FakePortalClient:
+        def delete_devices_by_serials(  # noqa: ANN001
+            self,
+            serials,
+            execute_delete,
+            log,
+            allow_recent_serials=None,
+            allow_recent_before=None,
+        ):
+            assert serials == ["ABC123"]
+            assert execute_delete is False
+            assert allow_recent_serials == {"ABC123"}
+            assert allow_recent_before is not None
+            return [
+                DeviceDeleteReportRow(
+                    serial="ABC123",
+                    status="skipped_recent_report",
+                    matched_count=1,
+                    last_report_time="2026/07/01 08:00",
+                    message="swiezy odczyt",
+                )
+            ]
+
+    monkeypatch.setattr(
+        Runner, "_build_service_order_client", lambda self: FakeServiceOrderClient()
+    )
+    monkeypatch.setattr(Runner, "_build_portal_client", lambda self: FakePortalClient())
+    monkeypatch.setattr(
+        "remote_ricoh.service.write_delete_report", lambda rows: tmp_path / "remote.csv"
+    )
+    monkeypatch.setattr(
+        "remote_ricoh.service.write_remote_auto_csv_report",
+        lambda rows, mode: tmp_path / f"{mode}.csv",
+    )
+
+    code = Runner(_build_settings()).run_remote_auto_scan(db_path, execute=False)
+
+    assert code == 0
+    dashboard = RemoteAutoStore(db_path).dashboard()
+    assert dashboard["counts"] == {ORDER_STATUS_WAITING_RECENT: 1}
+    assert dashboard["orders"][0]["last_report_time"] == "2026/07/01 08:00"
 
 
 def test_runner_service_order_snapshot_writes_report(monkeypatch, tmp_path: Path) -> None:

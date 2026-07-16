@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,10 +19,28 @@ from .config import (
 from .device_delete import DeviceDeleteReportRow, load_delete_serials, write_delete_report
 from .firebird_cmail import FirebirdCmailImporter
 from .portal import RicohPortalClient
+from .remote_auto import (
+    DEFAULT_REMOTE_AUTO_DB,
+    ORDER_STATUS_CLOSED,
+    ORDER_STATUS_FAILED,
+    ORDER_STATUS_REMOTE_NOT_FOUND,
+    ORDER_STATUS_SKIPPED,
+    ORDER_STATUS_WAITING_RECENT,
+    REMOTE_AUTO_FRESHNESS_MONTHS,
+    RemoteAutoRunResult,
+    RemoteAutoStore,
+    assert_remote_auto_execute_allowed,
+    decide_remote_auto_status,
+    format_order_event_note,
+    serve_remote_auto_panel,
+    subtract_months,
+    write_remote_auto_csv_report,
+)
 from .service_orders import (
     FirebirdServiceOrderClient,
     ServiceOrderActionRow,
     ServiceOrderDiffRow,
+    ServiceOrderFilter,
     ServiceOrderRow,
     diff_service_order_snapshots,
     load_remote_final_statuses,
@@ -233,6 +252,9 @@ class Runner:
         filters_path: Path,
         execute_service_orders: bool,
         remote_status_report: Path | None = None,
+        *,
+        repair_text: str | None = None,
+        preserve_metadata: bool = False,
     ) -> int:
         """Dopisuje wykonanie i opcjonalnie zamyka zlecenia serwisowe."""
         filters = load_service_order_filters(filters_path)
@@ -248,15 +270,53 @@ class Runner:
         )
 
         client = self._build_service_order_client()
+        close_options = {}
+        if repair_text is not None:
+            close_options["repair_text"] = repair_text
+        if preserve_metadata:
+            close_options["preserve_metadata"] = True
         rows = client.close_orders(
             filters,
             execute=execute_service_orders,
             remote_statuses=remote_statuses,
+            **close_options,
         )
         report_path = write_service_order_action_report(rows)
         logger.info(f"Raport zamykania zlecen serwisowych: {report_path.resolve()}")
         logger.info(_summarize_service_order_actions(rows))
         return 0
+
+    def run_remote_auto_scan(
+        self,
+        db_path: Path = DEFAULT_REMOTE_AUTO_DB,
+        *,
+        execute: bool = False,
+    ) -> int:
+        """Wykonuje codzienny cykl obslugi nowych zlecen REMOTE."""
+        result = self._run_remote_auto(mode="scan", db_path=db_path, execute=execute)
+        print(result.as_log_message())
+        return 0
+
+    def run_remote_auto_weekly(
+        self,
+        db_path: Path = DEFAULT_REMOTE_AUTO_DB,
+        *,
+        execute: bool = False,
+    ) -> int:
+        """Wykonuje tygodniowy cykl kolejki oczekujacej REMOTE."""
+        result = self._run_remote_auto(mode="weekly", db_path=db_path, execute=execute)
+        print(result.as_log_message())
+        return 0
+
+    def run_remote_auto_panel(
+        self,
+        db_path: Path = DEFAULT_REMOTE_AUTO_DB,
+        *,
+        host: str,
+        port: int,
+    ) -> int:
+        """Uruchamia prosty panel read-only z kolejka i raportami."""
+        return serve_remote_auto_panel(db_path, host=host, port=port)
 
     def _build_firebird_importer(self) -> FirebirdCmailImporter | None:
         if not self.settings.firebird_enabled:
@@ -335,6 +395,333 @@ class Runner:
     def _log_firebird_warning(self, logger: _SmbLogger) -> None:
         if self.settings.firebird_warning:
             logger.info(f"OSTRZEZENIE: {self.settings.firebird_warning}")
+
+    def _run_remote_auto(
+        self,
+        *,
+        mode: str,
+        db_path: Path,
+        execute: bool,
+    ) -> RemoteAutoRunResult:
+        if execute:
+            assert_remote_auto_execute_allowed()
+
+        logger = _ConsoleLogger()
+        store = RemoteAutoStore(db_path)
+        store.initialize()
+        now = datetime.now()
+        run_id = store.start_run(mode, execute, now)
+        status_counts: Counter[str] = Counter()
+        action_report_paths: list[Path] = []
+        remote_report_path: Path | None = None
+        scanned_orders = 0
+
+        try:
+            service_client = self._build_service_order_client()
+            orders = self._remote_auto_source_orders(service_client, store, mode, now)
+            scanned_orders = len(orders)
+            processable = self._remote_auto_filter_orders(orders, store, mode, now, logger)
+            serial_groups: dict[str, list[ServiceOrderRow]] = defaultdict(list)
+            for row in processable:
+                serial_groups[row.serial.casefold()].append(row)
+
+            serials: list[str] = []
+            serial_to_order: dict[str, ServiceOrderRow] = {}
+            for serial_key, rows in serial_groups.items():
+                if len(rows) > 1:
+                    for row in rows:
+                        previous = store.set_order_status(
+                            row,
+                            status=ORDER_STATUS_SKIPPED,
+                            reason="Ten sam numer seryjny wystepuje w wielu otwartych zleceniach.",
+                            now=now,
+                        )
+                        store.record_event(
+                            row,
+                            event_type="duplicate_serial",
+                            status_from=previous,
+                            status_to=ORDER_STATUS_SKIPPED,
+                            message="Pominieto: duplikat numeru seryjnego w otwartych zleceniach.",
+                            now=now,
+                        )
+                        status_counts[ORDER_STATUS_SKIPPED] += 1
+                    continue
+                row = rows[0]
+                serials.append(row.serial)
+                serial_to_order[serial_key] = row
+
+            if serials:
+                portal = self._build_portal_client()
+                cutoff = subtract_months(now, REMOTE_AUTO_FRESHNESS_MONTHS)
+                remote_rows = portal.delete_devices_by_serials(
+                    serials,
+                    execute,
+                    logger.info,
+                    allow_recent_serials=set(serials),
+                    allow_recent_before=cutoff,
+                )
+                remote_report_path = write_delete_report(remote_rows)
+                logger.info(f"Remote auto: raport Remote {remote_report_path.resolve()}")
+            else:
+                remote_rows = []
+
+            report_rows: list[dict[str, object]] = []
+            for remote_row in remote_rows:
+                order = serial_to_order.get(remote_row.serial.casefold())
+                if order is None:
+                    continue
+                decision = decide_remote_auto_status(remote_row, now=now)
+                close_report_path = self._remote_auto_maybe_close_order(
+                    service_client,
+                    store,
+                    order,
+                    decision.order_status,
+                    execute,
+                    now,
+                    action_report_paths,
+                )
+                final_status = (
+                    ORDER_STATUS_CLOSED if close_report_path and execute else decision.order_status
+                )
+                previous = store.set_order_status(
+                    order,
+                    status=final_status,
+                    remote_status=remote_row.status,
+                    last_report_time=remote_row.last_report_time,
+                    requested_status=remote_row.requested_status,
+                    reason=decision.reason,
+                    next_check_at=decision.next_check_at,
+                    remote_report_path=remote_report_path,
+                    close_report_path=close_report_path,
+                    now=now,
+                )
+                store.record_event(
+                    order,
+                    event_type=decision.event_type,
+                    status_from=previous,
+                    status_to=final_status,
+                    remote_status=remote_row.status,
+                    last_report_time=remote_row.last_report_time,
+                    message=decision.reason,
+                    report_path=remote_report_path,
+                    now=now,
+                )
+                self._remote_auto_maybe_append_note(
+                    service_client,
+                    store,
+                    order,
+                    previous=previous,
+                    current=final_status,
+                    reason=decision.reason,
+                    last_report_time=remote_row.last_report_time,
+                    execute=execute,
+                    now=now,
+                )
+                status_counts[final_status] += 1
+                report_rows.append(
+                    {
+                        "order": order.order_label,
+                        "serial": order.serial,
+                        "status": final_status,
+                        "remote_status": remote_row.status,
+                        "last_report_time": remote_row.last_report_time,
+                        "requested_status": remote_row.requested_status,
+                        "reason": decision.reason,
+                        "next_check_at": (
+                            decision.next_check_at.isoformat(sep=" ")
+                            if decision.next_check_at
+                            else ""
+                        ),
+                        "remote_report_path": str(remote_report_path or ""),
+                        "close_report_path": str(close_report_path or ""),
+                    }
+                )
+
+            local_report_path = write_remote_auto_csv_report(report_rows, mode=mode)
+            logger.info(f"Remote auto: raport lokalny {local_report_path.resolve()}")
+            summary = {
+                "scanned_orders": scanned_orders,
+                "remote_checked": len(remote_rows),
+                "status_counts": dict(status_counts),
+                "remote_report_path": str(remote_report_path or ""),
+                "local_report_path": str(local_report_path),
+                "action_report_paths": [str(path) for path in action_report_paths],
+            }
+            store.finish_run(
+                run_id,
+                status="success",
+                message="OK",
+                summary=summary,
+                now=datetime.now(),
+            )
+            return RemoteAutoRunResult(
+                run_id=run_id,
+                mode=mode,
+                execute=execute,
+                scanned_orders=scanned_orders,
+                remote_checked=len(remote_rows),
+                status_counts=dict(status_counts),
+                remote_report_path=remote_report_path,
+                action_report_paths=action_report_paths,
+            )
+        except Exception as exc:
+            store.finish_run(
+                run_id,
+                status="failed",
+                message=f"{type(exc).__name__}: {exc}",
+                summary={"scanned_orders": scanned_orders, "status_counts": dict(status_counts)},
+                now=datetime.now(),
+            )
+            raise
+
+    def _remote_auto_source_orders(
+        self,
+        service_client: FirebirdServiceOrderClient,
+        store: RemoteAutoStore,
+        mode: str,
+        now: datetime,
+    ) -> list[ServiceOrderRow]:
+        if mode == "weekly":
+            return service_client.fetch_by_table_ids(store.due_order_ids(now))
+        return service_client.fetch_remote_open_orders()
+
+    def _remote_auto_filter_orders(
+        self,
+        orders: list[ServiceOrderRow],
+        store: RemoteAutoStore,
+        mode: str,
+        now: datetime,
+        logger: _ConsoleLogger,
+    ) -> list[ServiceOrderRow]:
+        processable: list[ServiceOrderRow] = []
+        for row in orders:
+            store.upsert_order(row, now)
+            if row.stan == "Z":
+                previous = store.set_order_status(
+                    row,
+                    status=ORDER_STATUS_CLOSED,
+                    reason="Zlecenie juz zamkniete w Firebird.",
+                    now=now,
+                )
+                store.record_event(
+                    row,
+                    event_type="already_closed",
+                    status_from=previous,
+                    status_to=ORDER_STATUS_CLOSED,
+                    message="Zlecenie juz zamkniete w Firebird.",
+                    now=now,
+                )
+                continue
+            if not row.serial:
+                previous = store.set_order_status(
+                    row,
+                    status=ORDER_STATUS_SKIPPED,
+                    reason="Brak numeru seryjnego w zleceniu.",
+                    now=now,
+                )
+                store.record_event(
+                    row,
+                    event_type="missing_serial",
+                    status_from=previous,
+                    status_to=ORDER_STATUS_SKIPPED,
+                    message="Pominieto: brak numeru seryjnego w zleceniu.",
+                    now=now,
+                )
+                continue
+            if mode == "scan" and store.should_skip_daily(row, now):
+                logger.info(
+                    "Remote auto: pomijam codzienny skan kolejki oczekujacej "
+                    f"{row.order_label} {row.serial}."
+                )
+                continue
+            processable.append(row)
+        return processable
+
+    def _remote_auto_maybe_close_order(
+        self,
+        service_client: FirebirdServiceOrderClient,
+        store: RemoteAutoStore,
+        order: ServiceOrderRow,
+        order_status: str,
+        execute: bool,
+        now: datetime,
+        action_report_paths: list[Path],
+    ) -> Path | None:
+        if order_status != ORDER_STATUS_REMOTE_NOT_FOUND or not execute:
+            return None
+        filters = [ServiceOrderFilter(order_number=order.id_zlecenie, year=order.rok)]
+        actions = service_client.close_orders(
+            filters,
+            execute=True,
+            remote_statuses={order.serial.casefold(): "not_found"},
+        )
+        report_path = write_service_order_action_report(actions)
+        action_report_paths.append(report_path)
+        for action in actions:
+            store.record_event(
+                order,
+                event_type=f"service_order_{action.status}",
+                status_to=ORDER_STATUS_CLOSED,
+                remote_status="not_found",
+                message=action.message,
+                report_path=report_path,
+                now=now,
+            )
+        if all(action.status in {"closed", "already_closed"} for action in actions):
+            return report_path
+        return None
+
+    def _remote_auto_maybe_append_note(
+        self,
+        service_client: FirebirdServiceOrderClient,
+        store: RemoteAutoStore,
+        order: ServiceOrderRow,
+        *,
+        previous: str,
+        current: str,
+        reason: str,
+        last_report_time: str,
+        execute: bool,
+        now: datetime,
+    ) -> None:
+        if (
+            not execute
+            or previous == current
+            or current in {ORDER_STATUS_CLOSED, ORDER_STATUS_REMOTE_NOT_FOUND}
+        ):
+            return
+        if current not in {ORDER_STATUS_WAITING_RECENT, ORDER_STATUS_SKIPPED, ORDER_STATUS_FAILED}:
+            return
+        note = format_order_event_note(now, reason, last_report_time)
+        action = service_client.append_order_event(order, note, execute=True)
+        report_path = write_service_order_action_report([action])
+        store.record_event(
+            order,
+            event_type=f"service_order_{action.status}",
+            status_from=previous,
+            status_to=current,
+            message=action.message,
+            report_path=report_path,
+            now=now,
+        )
+        if action.status == "event_appended":
+            store.set_order_status(
+                order,
+                status=current,
+                reason=reason,
+                last_report_time=last_report_time,
+                close_report_path=report_path,
+                now=now,
+            )
+
+    def _build_portal_client(self) -> RicohPortalClient:
+        return RicohPortalClient(
+            login=self.settings.login_ricoh,
+            password=self.settings.pass_ricoh,
+            poll_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+            poll_interval_seconds=POLL_INTERVAL_SECONDS,
+            headless=True,
+        )
 
 
 @dataclass(slots=True)

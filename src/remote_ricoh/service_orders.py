@@ -239,6 +239,17 @@ def append_close_operator(existing: str, operator_name: str = DEFAULT_CLOSE_OPER
     return f"{current} {addition}"
 
 
+def append_edit_operator(existing: str, operator_name: str = DEFAULT_CLOSE_OPERATOR) -> str:
+    """Dopisuje slad edycji operatora bez znacznika zamkniecia."""
+    current = (existing or "").strip()
+    marker = f"Edytował: {operator_name}"
+    if marker.casefold() in current.casefold():
+        return current
+    if not current:
+        return marker
+    return f"{current} {marker}"
+
+
 def write_service_order_snapshot(
     rows: list[ServiceOrderRow],
     report_dir: Path = DEFAULT_REPORT_DIR,
@@ -369,12 +380,52 @@ class FirebirdServiceOrderClient:
         finally:
             connection.close()
 
+    def fetch_remote_open_orders(self) -> list[ServiceOrderRow]:
+        """Zwraca otwarte zlecenia przypisane do technika REMOTE."""
+        connection = self._connect()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    ID_ZLECENIE_TABLE, ID_ZLECENIE, ROK, STAN, DATA, DATA_Z,
+                    SERIAL, PROBLEM, WYKONANIE, OPERATOR, TECHNIK, EDITCNT,
+                    EDITDATE, EDITTIME, EDITSOURCE, ID_KLIENT, ID_MASZYNA,
+                    ID_FAKTURA, FAKTURA
+                FROM ZLECENIE
+                WHERE STAN IN ('O', 'ZR')
+                  AND TRIM(UPPER(COALESCE(TECHNIK, ''))) = 'REMOTE'
+                ORDER BY DATA, ROK, ID_ZLECENIE, ID_ZLECENIE_TABLE
+                """
+            )
+            return [_row_from_db("remote_auto", row) for row in cursor.fetchall()]
+        finally:
+            connection.close()
+
+    def fetch_by_table_ids(self, table_ids: list[int]) -> list[ServiceOrderRow]:
+        """Zwraca zlecenia po ID_ZLECENIE_TABLE z zachowaniem kolejnosci wejscia."""
+        if not table_ids:
+            return []
+        connection = self._connect()
+        try:
+            cursor = connection.cursor()
+            rows: list[ServiceOrderRow] = []
+            for table_id in table_ids:
+                row = self._fetch_by_table_id(cursor, table_id, f"id_table:{table_id}")
+                if row is not None:
+                    rows.append(row)
+            return rows
+        finally:
+            connection.close()
+
     def close_orders(
         self,
         filters: list[ServiceOrderFilter],
         *,
         execute: bool,
         remote_statuses: dict[str, str] | None = None,
+        repair_text: str | None = None,
+        preserve_metadata: bool = False,
     ) -> list[ServiceOrderActionRow]:
         """Planowo albo realnie zamyka zlecenia wskazane filtrami."""
         if execute:
@@ -417,6 +468,8 @@ class FirebirdServiceOrderClient:
                             row,
                             execute=execute,
                             remote_statuses=remote_statuses or {},
+                            repair_text=repair_text or self.repair_text,
+                            preserve_metadata=preserve_metadata,
                         )
                     )
             if execute:
@@ -424,6 +477,69 @@ class FirebirdServiceOrderClient:
             return results
         except Exception:
             if execute and hasattr(connection, "rollback"):
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def append_order_event(
+        self,
+        row: ServiceOrderRow,
+        note: str,
+        *,
+        execute: bool,
+    ) -> ServiceOrderActionRow:
+        """Dopisuje zdarzenie do WYKONANIE bez zamykania zlecenia."""
+        if execute:
+            assert_service_order_writes_allowed()
+
+        if row.stan == "Z":
+            return _action_for_row(row, "already_closed", message="Zlecenie jest juz zamkniete.")
+        if row.stan not in {"O", "ZR"}:
+            return _action_for_row(
+                row,
+                "skipped_status",
+                message=f"Pominieto: nieobslugiwany status zlecenia {row.stan!r}.",
+            )
+
+        new_wykonanie = append_repair_text(row.wykonanie, note)
+        if new_wykonanie == row.wykonanie:
+            return _action_for_row(
+                row,
+                "already_noted",
+                after_wykonanie=new_wykonanie,
+                message="Zdarzenie bylo juz dopisane.",
+            )
+        new_operator = append_edit_operator(row.operator)
+        if not execute:
+            return _action_for_row(
+                row,
+                "would_append_event",
+                after_wykonanie=new_wykonanie,
+                message="Dry-run: zdarzenie zostaloby dopisane do WYKONANIE.",
+            )
+
+        connection = self._connect()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                UPDATE ZLECENIE
+                SET WYKONANIE = ?, OPERATOR = ?
+                WHERE ID_ZLECENIE_TABLE = ? AND STAN IN ('O', 'ZR')
+                """,
+                (new_wykonanie, new_operator, row.id_zlecenie_table),
+            )
+            connection.commit()
+            after = self._fetch_by_table_id(cursor, row.id_zlecenie_table, row.filter_key)
+            return _action_for_row(
+                row,
+                "event_appended",
+                after_wykonanie=after.wykonanie if after else new_wykonanie,
+                message="Zdarzenie dopisane do WYKONANIE.",
+            )
+        except Exception:
+            if hasattr(connection, "rollback"):
                 connection.rollback()
             raise
         finally:
@@ -471,6 +587,8 @@ class FirebirdServiceOrderClient:
         *,
         execute: bool,
         remote_statuses: dict[str, str],
+        repair_text: str,
+        preserve_metadata: bool,
     ) -> ServiceOrderActionRow:
         remote_status = remote_statuses.get(row.serial.casefold(), "") if row.serial else ""
         if remote_statuses and remote_status != "not_found":
@@ -491,42 +609,64 @@ class FirebirdServiceOrderClient:
                 message=f"Pominieto: nieobslugiwany status zlecenia {row.stan!r}.",
             )
 
-        new_wykonanie = append_repair_text(row.wykonanie, self.repair_text)
-        new_operator = append_close_operator(row.operator)
+        new_wykonanie = append_repair_text(row.wykonanie, repair_text)
+        new_operator = row.operator if preserve_metadata else append_close_operator(row.operator)
         if not execute:
             return _action_for_row(
                 row,
                 "would_close",
                 remote_status=remote_status,
                 after_stan="Z",
-                after_data_z=date.today().isoformat(),
+                after_data_z=row.data_z if preserve_metadata else date.today().isoformat(),
                 after_wykonanie=new_wykonanie,
                 message="Dry-run: zlecenie kwalifikuje sie do zamkniecia.",
             )
 
-        cursor.execute(
-            """
-            UPDATE ZLECENIE
-            SET WYKONANIE = ?, OPERATOR = ?, STAN = 'ZR'
-            WHERE ID_ZLECENIE_TABLE = ? AND STAN IN ('O', 'ZR')
-            """,
-            (new_wykonanie, new_operator, row.id_zlecenie_table),
-        )
-        cursor.execute(
-            """
-            UPDATE ZLECENIE
-            SET STAN = 'Z', DATA_Z = CURRENT_DATE
-            WHERE ID_ZLECENIE_TABLE = ? AND STAN = 'ZR'
-            """,
-            (row.id_zlecenie_table,),
-        )
+        if preserve_metadata:
+            cursor.execute(
+                """
+                UPDATE ZLECENIE
+                SET WYKONANIE = ?, STAN = 'ZR'
+                WHERE ID_ZLECENIE_TABLE = ? AND STAN IN ('O', 'ZR')
+                """,
+                (new_wykonanie, row.id_zlecenie_table),
+            )
+            cursor.execute(
+                """
+                UPDATE ZLECENIE
+                SET STAN = 'Z'
+                WHERE ID_ZLECENIE_TABLE = ? AND STAN = 'ZR'
+                """,
+                (row.id_zlecenie_table,),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE ZLECENIE
+                SET WYKONANIE = ?, OPERATOR = ?, STAN = 'ZR'
+                WHERE ID_ZLECENIE_TABLE = ? AND STAN IN ('O', 'ZR')
+                """,
+                (new_wykonanie, new_operator, row.id_zlecenie_table),
+            )
+            cursor.execute(
+                """
+                UPDATE ZLECENIE
+                SET STAN = 'Z', DATA_Z = CURRENT_DATE
+                WHERE ID_ZLECENIE_TABLE = ? AND STAN = 'ZR'
+                """,
+                (row.id_zlecenie_table,),
+            )
         after = self._fetch_by_table_id(cursor, row.id_zlecenie_table, row.filter_key)
         return _action_for_row(
             row,
             "closed",
             remote_status=remote_status,
             after_stan=after.stan if after else "Z",
-            after_data_z=after.data_z if after else date.today().isoformat(),
+            after_data_z=(
+                (after.data_z if after else row.data_z)
+                if preserve_metadata
+                else (after.data_z if after else date.today().isoformat())
+            ),
             after_wykonanie=after.wykonanie if after else new_wykonanie,
             message="Zlecenie zamkniete.",
         )

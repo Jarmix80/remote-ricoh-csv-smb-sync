@@ -162,6 +162,54 @@ FB_ALLOW_WRITES=1 python -m remote_ricoh.run --env-file .env \
 `STAN='Z'` i `DATA_Z=CURRENT_DATE`, a do `OPERATOR` dopisuje
 `Edytował: Marcin,Zamknął :Marcin`; nie zmienia `TECHNIK`.
 
+Dla zlecen zamykanych po pomocy zdalnej mozna podac wlasny wpis i zachowac
+metadane zlecenia bez zmian:
+```bash
+FB_ALLOW_WRITES=1 python -m remote_ricoh.run --env-file .env \
+  --close-service-orders zlecenia.txt \
+  --service-order-repair-text "pomoc zdalna" \
+  --preserve-service-order-metadata \
+  --execute-service-orders
+```
+W tym wariancie aktualizowane sa wylacznie `WYKONANIE` oraz `STAN` przez `ZR`
+do `Z`; `OPERATOR`, `TECHNIK` i `DATA_Z` sa zachowane. Firebird moze niezaleznie
+zaktualizowac techniczne pola audytowe `EDITCNT`, `EDITDATE` i `EDITTIME`.
+
+### Cykliczny automat REMOTE
+Tryb testowy codziennego skanu nowych zlecen `TECHNIK=REMOTE`:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --remote-auto-scan
+```
+
+Tryb testowy tygodniowej kolejki oczekujacej:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --remote-auto-weekly
+```
+
+Domyslna lokalna baza kolejki to `local/remote_auto/remote_auto.sqlite`.
+Automat porownuje `Last Report Date/Time` z progiem jednego miesiaca. Swieze
+odczyty trafiaja do `waiting_recent` i sa sprawdzane raz w tygodniu; starsze
+odczyty przechodza do `ready_delete`. W trybie testowym nie ma usuwania w Remote
+ani zapisu do Firebird.
+
+Realny tryb po okresie testowym wymaga flagi oraz dwoch zmiennych ochronnych:
+```bash
+source .venv/bin/activate
+FB_ALLOW_WRITES=1 REMOTE_AUTO_ALLOW_DELETES=1 \
+python -m remote_ricoh.run --env-file .env --remote-auto-scan --execute-remote-auto
+```
+
+Panel LAN bez hasla:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --remote-auto-panel --remote-auto-port 8099
+```
+
+Panel pokazuje kolejke, ostatnie uruchomienia, zdarzenia i linki do raportow.
+Jesli port jest zajety, automat probuje kolejne porty do `+20`.
+
 Kody wyjscia:
 - `0` sukces
 - `1` blad wykonania
@@ -171,6 +219,8 @@ Kody wyjscia:
 ### Cron
 Instalacja wpisow cron:
 - codziennie o `06:00` pelny proces pobrania i importu
+- codziennie o `06:30` testowy skan `--remote-auto-scan`
+- w poniedzialki o `07:15` testowa kolejka `--remote-auto-weekly`
 - po restarcie serwera (`@reboot`, start po 180s) diagnostyka `--dry-run` bez logowania Ricoh
 ```bash
 ./scripts/install_cron.sh
@@ -348,6 +398,54 @@ appends `Urządzenie usunięte z Remote.` to `WYKONANIE`, transitions through
 `STAN='ZR'`, then sets `STAN='Z'` and `DATA_Z=CURRENT_DATE`, and appends
 `Edytował: Marcin,Zamknął :Marcin` to `OPERATOR`; it does not change `TECHNIK`.
 
+For remote-support closures, a custom completion note can be used while keeping
+the order metadata unchanged:
+```bash
+FB_ALLOW_WRITES=1 python -m remote_ricoh.run --env-file .env \
+  --close-service-orders orders.txt \
+  --service-order-repair-text "pomoc zdalna" \
+  --preserve-service-order-metadata \
+  --execute-service-orders
+```
+This mode updates only `WYKONANIE` and transitions `STAN` through `ZR` to `Z`.
+It preserves `OPERATOR`, `TECHNIK`, and `DATA_Z`; Firebird may independently
+update the technical audit fields `EDITCNT`, `EDITDATE`, and `EDITTIME`.
+
+### Cyclic REMOTE automation
+Daily test-mode scan for new `TECHNIK=REMOTE` service orders:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --remote-auto-scan
+```
+
+Weekly test-mode check of the waiting queue:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --remote-auto-weekly
+```
+
+The default local queue database is `local/remote_auto/remote_auto.sqlite`.
+The automation compares `Last Report Date/Time` with a one-month threshold.
+Recent readings go to `waiting_recent` and are checked weekly; older readings
+go to `ready_delete`. Test mode does not delete in Remote and does not write to
+Firebird.
+
+Actual execution after the test period requires a flag and two guard variables:
+```bash
+source .venv/bin/activate
+FB_ALLOW_WRITES=1 REMOTE_AUTO_ALLOW_DELETES=1 \
+python -m remote_ricoh.run --env-file .env --remote-auto-scan --execute-remote-auto
+```
+
+Unauthenticated LAN panel:
+```bash
+source .venv/bin/activate
+python -m remote_ricoh.run --env-file .env --remote-auto-panel --remote-auto-port 8099
+```
+
+The panel shows the queue, recent runs, events, and report links. If the port is
+busy, the automation tries the next ports up to `+20`.
+
 Exit codes:
 - `0` success
 - `1` runtime error
@@ -357,6 +455,8 @@ Exit codes:
 ### Cron
 Install cron entries:
 - daily at `06:00` for the full download and import process
+- daily at `06:30` for test-mode `--remote-auto-scan`
+- Mondays at `07:15` for test-mode `--remote-auto-weekly`
 - after server restart (`@reboot`, starts after 180s) for `--dry-run` diagnostics without Ricoh login
 ```bash
 ./scripts/install_cron.sh

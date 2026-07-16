@@ -626,3 +626,195 @@ def test_main_requires_close_service_orders_for_remote_status_report(
     code = run.main()
 
     assert code == 2
+
+
+def test_main_remote_auto_scan_path(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+                "FB_MODE=network",
+                "FB_HOST=127.0.0.1",
+                "FB_DATABASE=BAZAMS_TEST",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "remote_auto.sqlite"
+    captured: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_remote_auto_scan(self, db_path: Path, *, execute: bool = False) -> int:
+            captured["db_path"] = db_path
+            captured["execute"] = execute
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--remote-auto-scan",
+            "--remote-auto-db",
+            str(db_path),
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"db_path": db_path, "execute": False}
+
+
+def test_main_remote_auto_weekly_execute_path(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+                "FB_MODE=network",
+                "FB_HOST=127.0.0.1",
+                "FB_DATABASE=BAZAMS_TEST",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "remote_auto.sqlite"
+    captured: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_remote_auto_weekly(self, db_path: Path, *, execute: bool = False) -> int:
+            captured["db_path"] = db_path
+            captured["execute"] = execute
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--remote-auto-weekly",
+            "--remote-auto-db",
+            str(db_path),
+            "--execute-remote-auto",
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"db_path": db_path, "execute": True}
+
+
+def test_main_remote_auto_panel_without_lock(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    lock_file.write_text("pid=1\n", encoding="utf-8")
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "remote_auto.sqlite"
+    captured: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_remote_auto_panel(self, db_path: Path, *, host: str, port: int) -> int:
+            captured["db_path"] = db_path
+            captured["host"] = host
+            captured["port"] = port
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--remote-auto-panel",
+            "--remote-auto-db",
+            str(db_path),
+            "--remote-auto-host",
+            "0.0.0.0",
+            "--remote-auto-port",
+            "8105",
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"db_path": db_path, "host": "0.0.0.0", "port": 8105}
+
+
+def test_main_requires_remote_auto_mode_for_execute_remote_auto(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "remote_ricoh.lock"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--execute-remote-auto",
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 2

@@ -12,6 +12,7 @@ from remote_ricoh.service_orders import (
     ServiceOrderFilter,
     ServiceOrderRow,
     append_close_operator,
+    append_edit_operator,
     append_repair_text,
     assert_service_order_writes_allowed,
     diff_service_order_snapshots,
@@ -76,6 +77,12 @@ class _FakeCursor:
         if compact_sql.startswith("SELECT") and "FROM ZLECENIE" in compact_sql:
             matched = list(self.rows)
             idx = 0
+            if "STAN IN ('O', 'ZR')" in compact_sql:
+                matched = [row for row in matched if row["STAN"] in {"O", "ZR"}]
+            if "TRIM(UPPER(COALESCE(TECHNIK, ''))) = 'REMOTE'" in compact_sql:
+                matched = [
+                    row for row in matched if str(row["TECHNIK"]).strip().upper() == "REMOTE"
+                ]
             if "ID_ZLECENIE = ?" in compact_sql:
                 value = params[idx]
                 idx += 1
@@ -94,13 +101,19 @@ class _FakeCursor:
             self.fetchall_result = [_tuple_from_row(row) for row in matched]
             return
 
-        if compact_sql.startswith("UPDATE ZLECENIE SET WYKONANIE = ?, OPERATOR = ?"):
-            new_wykonanie, new_operator, table_id = params
+        if compact_sql.startswith("UPDATE ZLECENIE SET WYKONANIE = ?"):
+            if "OPERATOR = ?" in compact_sql:
+                new_wykonanie, new_operator, table_id = params
+            else:
+                new_wykonanie, table_id = params
+                new_operator = None
             for row in self.rows:
                 if row["ID_ZLECENIE_TABLE"] == table_id and row["STAN"] in {"O", "ZR"}:
                     row["WYKONANIE"] = new_wykonanie
-                    row["OPERATOR"] = new_operator
-                    row["STAN"] = "ZR"
+                    if new_operator is not None:
+                        row["OPERATOR"] = new_operator
+                    if "STAN = 'ZR'" in compact_sql:
+                        row["STAN"] = "ZR"
             return
 
         if compact_sql.startswith("UPDATE ZLECENIE SET STAN = 'Z'"):
@@ -108,7 +121,8 @@ class _FakeCursor:
             for row in self.rows:
                 if row["ID_ZLECENIE_TABLE"] == table_id and row["STAN"] == "ZR":
                     row["STAN"] = "Z"
-                    row["DATA_Z"] = "2026-07-02"
+                    if "DATA_Z = CURRENT_DATE" in compact_sql:
+                        row["DATA_Z"] = "2026-07-02"
             return
 
         raise AssertionError(f"Nieobsluzone SQL: {compact_sql}")
@@ -250,6 +264,28 @@ def test_append_close_operator_without_duplicate() -> None:
     assert append_close_operator(value) == value
 
 
+def test_append_edit_operator_without_duplicate() -> None:
+    assert append_edit_operator("Utworzył: JoannaG") == "Utworzył: JoannaG Edytował: Marcin"
+    assert append_edit_operator("Utworzył: JoannaG Edytował: Marcin") == (
+        "Utworzył: JoannaG Edytował: Marcin"
+    )
+
+
+def test_fetch_remote_open_orders_filters_technik_and_status() -> None:
+    connection = _FakeConnection(
+        [
+            _db_row(table_id=1, order_number=1, technik="REMOTE", stan="O"),
+            _db_row(table_id=2, order_number=2, technik="REMOTE", stan="Z"),
+            _db_row(table_id=3, order_number=3, technik="Marcin", stan="O"),
+        ]
+    )
+    client = _TestServiceOrderClient(connection)
+
+    rows = client.fetch_remote_open_orders()
+
+    assert [row.id_zlecenie_table for row in rows] == [1]
+
+
 def test_close_orders_dry_run_skips_remote_status() -> None:
     connection = _FakeConnection([_db_row(order_number=13721, serial="E154MB32964")])
     client = _TestServiceOrderClient(connection)
@@ -319,6 +355,54 @@ def test_close_orders_execute_updates_status_operator_and_keeps_technik(monkeypa
     assert any(
         "SET STAN = 'Z', DATA_Z = CURRENT_DATE" in sql for sql in connection.cursor_obj.executed_sql
     )
+
+
+def test_close_orders_execute_preserves_metadata_when_requested(monkeypatch) -> None:
+    monkeypatch.setenv("FB_ALLOW_WRITES", "1")
+    row = _db_row(wykonanie="Diagnoza", operator="Utworzył: JoannaG")
+    connection = _FakeConnection([row])
+    client = _TestServiceOrderClient(connection)
+
+    rows = client.close_orders(
+        [ServiceOrderFilter(order_number=14331, year=2025)],
+        execute=True,
+        repair_text="pomoc zdalna",
+        preserve_metadata=True,
+    )
+
+    assert rows[0].status == "closed"
+    assert row["STAN"] == "Z"
+    assert row["DATA_Z"] is None
+    assert row["WYKONANIE"] == "Diagnoza\npomoc zdalna"
+    assert row["OPERATOR"] == "Utworzył: JoannaG"
+    assert row["TECHNIK"] == "Marcin Jarmuszkiewicz"
+    assert any(
+        "SET WYKONANIE = ?, STAN = 'ZR'" in sql for sql in connection.cursor_obj.executed_sql
+    )
+    assert any("SET STAN = 'Z'" in sql for sql in connection.cursor_obj.executed_sql)
+    assert not any(
+        "DATA_Z" in sql and sql.startswith("UPDATE") for sql in connection.cursor_obj.executed_sql
+    )
+
+
+def test_append_order_event_execute_updates_wykonanie_without_closing(monkeypatch) -> None:
+    monkeypatch.setenv("FB_ALLOW_WRITES", "1")
+    row = _db_row(technik="REMOTE", wykonanie="Diagnoza")
+    connection = _FakeConnection([row])
+    client = _TestServiceOrderClient(connection)
+    service_row = client.fetch_remote_open_orders()[0]
+
+    action = client.append_order_event(
+        service_row,
+        "2026-07-02 10:00 - Remote: nie usunieto; powod: swiezy odczyt.",
+        execute=True,
+    )
+
+    assert action.status == "event_appended"
+    assert row["STAN"] == "O"
+    assert "swiezy odczyt" in str(row["WYKONANIE"])
+    assert row["OPERATOR"] == "Utworzył: JoannaG Edytował: Marcin"
+    assert connection.commit_calls == 1
 
 
 def test_diff_service_order_snapshots(tmp_path: Path) -> None:

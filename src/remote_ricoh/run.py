@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import ConfigError, Settings
 from .lock import AlreadyRunningError, FileLock
+from .remote_auto import DEFAULT_REMOTE_AUTO_DB, REMOTE_AUTO_PANEL_PORT
 from .service import Runner
 
 
@@ -58,6 +59,21 @@ def build_parser() -> argparse.ArgumentParser:
             "Domyslnie wykonuje dry-run zamkniecia."
         ),
     )
+    mode_group.add_argument(
+        "--remote-auto-scan",
+        action="store_true",
+        help="Cykliczny skan nowych zlecen TECHNIK=REMOTE z produkcyjnego Firebirda.",
+    )
+    mode_group.add_argument(
+        "--remote-auto-weekly",
+        action="store_true",
+        help="Tygodniowa kontrola lokalnej kolejki oczekujacej REMOTE.",
+    )
+    mode_group.add_argument(
+        "--remote-auto-panel",
+        action="store_true",
+        help="Uruchamia prosty panel WWW z kolejka, runami i raportami REMOTE.",
+    )
     parser.add_argument(
         "--dplac-not-obtained-csv",
         help="Opcjonalna sciezka do DPLAC_Not_obtained CSV dla trybu --dplac-csv.",
@@ -90,11 +106,50 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--service-order-repair-text",
+        help=(
+            "Opcjonalna tresc dopisywana do WYKONANIE przy --close-service-orders. "
+            "Domyslnie: 'Urządzenie usunięte z Remote.'."
+        ),
+    )
+    parser.add_argument(
+        "--preserve-service-order-metadata",
+        action="store_true",
+        help=(
+            "Przy --close-service-orders nie zmienia OPERATOR ani DATA_Z; "
+            "aktualizuje tylko WYKONANIE i STAN przez ZR do Z."
+        ),
+    )
+    parser.add_argument(
         "--remote-status-report",
         help=(
             "Opcjonalny raport Remote CSV; przy zamykaniu zlecen zamyka tylko seriale "
             "z final_status/status=not_found."
         ),
+    )
+    parser.add_argument(
+        "--remote-auto-db",
+        default=str(DEFAULT_REMOTE_AUTO_DB),
+        help="Sciezka do lokalnej bazy SQLite workflow REMOTE.",
+    )
+    parser.add_argument(
+        "--execute-remote-auto",
+        action="store_true",
+        help=(
+            "Wykonuje realne usuwanie i zamykanie w trybie remote-auto. "
+            "Wymaga FB_ALLOW_WRITES=1 i REMOTE_AUTO_ALLOW_DELETES=1."
+        ),
+    )
+    parser.add_argument(
+        "--remote-auto-host",
+        default="0.0.0.0",
+        help="Host panelu --remote-auto-panel.",
+    )
+    parser.add_argument(
+        "--remote-auto-port",
+        type=int,
+        default=REMOTE_AUTO_PANEL_PORT,
+        help="Port startowy panelu --remote-auto-panel.",
     )
     return parser
 
@@ -124,6 +179,15 @@ def main() -> int:
     if args.remote_status_report and not args.close_service_orders:
         print("BLAD konfiguracji: --remote-status-report wymaga --close-service-orders.")
         return 2
+    if args.service_order_repair_text and not args.close_service_orders:
+        print("BLAD konfiguracji: --service-order-repair-text wymaga --close-service-orders.")
+        return 2
+    if args.preserve_service_order_metadata and not args.close_service_orders:
+        print("BLAD konfiguracji: --preserve-service-order-metadata wymaga --close-service-orders.")
+        return 2
+    if args.execute_remote_auto and not (args.remote_auto_scan or args.remote_auto_weekly):
+        print("BLAD konfiguracji: --execute-remote-auto wymaga trybu remote-auto.")
+        return 2
 
     try:
         settings = Settings.from_env_file(env_file)
@@ -137,9 +201,20 @@ def main() -> int:
         print(f"BLAD konfiguracji: {exc}")
         return 2
 
+    runner = Runner(settings)
+    if args.remote_auto_panel:
+        try:
+            return runner.run_remote_auto_panel(
+                Path(args.remote_auto_db),
+                host=args.remote_auto_host,
+                port=args.remote_auto_port,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"BLAD wykonania: {type(exc).__name__}: {exc}")
+            return 1
+
     try:
         with FileLock(lock_file):
-            runner = Runner(settings)
             if args.dry_run:
                 return runner.run_dry()
             if args.dplac_csv:
@@ -164,10 +239,26 @@ def main() -> int:
                 before_path, after_path = args.service_order_diff
                 return runner.run_service_order_diff(Path(before_path), Path(after_path))
             if args.close_service_orders:
+                close_options = {}
+                if args.service_order_repair_text:
+                    close_options["repair_text"] = args.service_order_repair_text
+                if args.preserve_service_order_metadata:
+                    close_options["preserve_metadata"] = True
                 return runner.run_close_service_orders(
                     Path(args.close_service_orders),
                     args.execute_service_orders,
                     Path(args.remote_status_report) if args.remote_status_report else None,
+                    **close_options,
+                )
+            if args.remote_auto_scan:
+                return runner.run_remote_auto_scan(
+                    Path(args.remote_auto_db),
+                    execute=args.execute_remote_auto,
+                )
+            if args.remote_auto_weekly:
+                return runner.run_remote_auto_weekly(
+                    Path(args.remote_auto_db),
+                    execute=args.execute_remote_auto,
                 )
             return runner.run()
     except AlreadyRunningError as exc:
