@@ -63,6 +63,7 @@ class RemoteAutoRunResult:
     remote_checked: int
     status_counts: dict[str, int]
     remote_report_path: Path | None
+    local_report_path: Path
     action_report_paths: list[Path]
 
     def as_log_message(self) -> str:

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from remote_ricoh.config import Settings
+import pytest
+
+from remote_ricoh.config import EmailSettings, Settings
 from remote_ricoh.device_delete import DeviceDeleteReportRow
-from remote_ricoh.remote_auto import ORDER_STATUS_WAITING_RECENT, RemoteAutoStore
+from remote_ricoh.remote_auto import (
+    ORDER_STATUS_WAITING_RECENT,
+    RemoteAutoRunResult,
+    RemoteAutoStore,
+)
 from remote_ricoh.service import Runner
 from remote_ricoh.service_orders import (
     ServiceOrderActionRow,
@@ -473,6 +479,89 @@ def test_runner_remote_auto_scan_records_waiting_recent(monkeypatch, tmp_path: P
     dashboard = RemoteAutoStore(db_path).dashboard()
     assert dashboard["counts"] == {ORDER_STATUS_WAITING_RECENT: 1}
     assert dashboard["orders"][0]["last_report_time"] == "2026/07/01 08:00"
+
+
+def test_runner_remote_auto_weekly_sends_success_report(monkeypatch, tmp_path: Path) -> None:
+    report_path = tmp_path / "weekly.csv"
+    report_path.write_text("order,serial,status\n", encoding="utf-8")
+    result = RemoteAutoRunResult(
+        run_id=1,
+        mode="weekly",
+        execute=False,
+        scanned_orders=0,
+        remote_checked=0,
+        status_counts={},
+        remote_report_path=None,
+        local_report_path=report_path,
+        action_report_paths=[],
+    )
+    settings = replace(
+        _build_settings(),
+        email=EmailSettings(
+            host="ksero-partner.com.pl",
+            port=587,
+            username="system@ksero-partner.com.pl",
+            password="secret",
+            sender_address="system@ksero-partner.com.pl",
+            sender_name="Remote Ricoh",
+            use_ssl=False,
+            use_tls=True,
+            weekly_report_recipients=("marcin@ksero-partner.com.pl",),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(self, *, mode, db_path, execute):  # noqa: ANN001, ANN202
+        captured["mode"] = mode
+        return result
+
+    def fake_email(email, actual_result):  # noqa: ANN001
+        captured["email"] = email
+        captured["result"] = actual_result
+
+    monkeypatch.setattr(Runner, "_run_remote_auto", fake_run)
+    monkeypatch.setattr("remote_ricoh.service.send_weekly_success_report", fake_email)
+
+    code = Runner(settings).run_remote_auto_weekly(tmp_path / "queue.sqlite")
+
+    assert code == 0
+    assert captured["mode"] == "weekly"
+    assert captured["result"] is result
+
+
+def test_runner_remote_auto_weekly_sends_failure_alert(monkeypatch, tmp_path: Path) -> None:
+    settings = replace(
+        _build_settings(),
+        email=EmailSettings(
+            host="ksero-partner.com.pl",
+            port=587,
+            username="system@ksero-partner.com.pl",
+            password="secret",
+            sender_address="system@ksero-partner.com.pl",
+            sender_name="Remote Ricoh",
+            use_ssl=False,
+            use_tls=True,
+            weekly_report_recipients=("marcin@ksero-partner.com.pl",),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(self, *, mode, db_path, execute):  # noqa: ANN001, ANN202
+        raise RuntimeError("portal unavailable")
+
+    def fake_email(email, error, *, redactions):  # noqa: ANN001
+        captured["email"] = email
+        captured["error"] = error
+        captured["redactions"] = redactions
+
+    monkeypatch.setattr(Runner, "_run_remote_auto", fake_run)
+    monkeypatch.setattr("remote_ricoh.service.send_weekly_failure_alert", fake_email)
+
+    with pytest.raises(RuntimeError, match="portal unavailable"):
+        Runner(settings).run_remote_auto_weekly(tmp_path / "queue.sqlite")
+
+    assert captured["error"].args == ("portal unavailable",)
+    assert "secret" in captured["redactions"]
 
 
 def test_runner_service_order_snapshot_writes_report(monkeypatch, tmp_path: Path) -> None:

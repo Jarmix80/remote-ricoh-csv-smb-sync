@@ -50,6 +50,7 @@ from .service_orders import (
     write_service_order_snapshot,
 )
 from .smb_io import SmbClient
+from .weekly_email import send_weekly_failure_alert, send_weekly_success_report
 from .zip_processing import extract_meter_csvs
 
 
@@ -304,7 +305,12 @@ class Runner:
         execute: bool = False,
     ) -> int:
         """Wykonuje tygodniowy cykl kolejki oczekujacej REMOTE."""
-        result = self._run_remote_auto(mode="weekly", db_path=db_path, execute=execute)
+        try:
+            result = self._run_remote_auto(mode="weekly", db_path=db_path, execute=execute)
+        except Exception as exc:
+            self._send_weekly_failure_alert(exc)
+            raise
+        self._send_weekly_success_report(result)
         print(result.as_log_message())
         return 0
 
@@ -562,6 +568,7 @@ class Runner:
                 remote_checked=len(remote_rows),
                 status_counts=dict(status_counts),
                 remote_report_path=remote_report_path,
+                local_report_path=local_report_path,
                 action_report_paths=action_report_paths,
             )
         except Exception as exc:
@@ -573,6 +580,39 @@ class Runner:
                 now=datetime.now(),
             )
             raise
+
+    def _send_weekly_success_report(self, result: RemoteAutoRunResult) -> None:
+        email = self.settings.email
+        if email is None:
+            details = self.settings.email_warning or "brak konfiguracji EMAIL_*."
+            raise ValueError(f"Nie mozna wyslac raportu tygodniowego: {details}")
+        send_weekly_success_report(email, result)
+        recipients = ", ".join(email.weekly_report_recipients)
+        print(f"Remote auto: wyslano raport tygodniowy e-mail do {recipients}.")
+
+    def _send_weekly_failure_alert(self, error: Exception) -> None:
+        email = self.settings.email
+        if email is None:
+            details = self.settings.email_warning or "brak konfiguracji EMAIL_*."
+            print(f"Remote auto: nie wyslano alertu e-mail: {details}")
+            return
+        try:
+            send_weekly_failure_alert(
+                email,
+                error,
+                redactions=(
+                    email.password,
+                    self.settings.pass_ricoh,
+                    self.settings.fb_password or "",
+                ),
+            )
+            recipients = ", ".join(email.weekly_report_recipients)
+            print(f"Remote auto: wyslano alert e-mail do {recipients}.")
+        except Exception as email_error:  # noqa: BLE001
+            print(
+                "Remote auto: nie udalo sie wyslac alertu e-mail: "
+                f"{type(email_error).__name__}: {email_error}"
+            )
 
     def _remote_auto_source_orders(
         self,

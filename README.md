@@ -188,6 +188,21 @@ source .venv/bin/activate
 python -m remote_ricoh.run --env-file .env --remote-auto-weekly
 ```
 
+Po poprawnym skanie tygodniowym automat wysyla na `EMAIL_WEEKLY_REPORT_TO`
+podsumowanie oraz zalacza lokalny raport CSV. Przy bledzie skanu wysyla alert.
+Wymagane ustawienia SMTP w `.env`:
+```env
+EMAIL_HOST=ksero-partner.com.pl
+EMAIL_PORT=587
+EMAIL_USERNAME=system@ksero-partner.com.pl
+EMAIL_PASSWORD=
+EMAIL_SENDER_ADDRESS=system@ksero-partner.com.pl
+EMAIL_SENDER_NAME=Remote Ricoh
+EMAIL_USE_SSL=false
+EMAIL_USE_TLS=true
+EMAIL_WEEKLY_REPORT_TO=marcin@ksero-partner.com.pl
+```
+
 Domyslna lokalna baza kolejki to `local/remote_auto/remote_auto.sqlite`.
 Automat porownuje `Last Report Date/Time` z progiem jednego miesiaca. Swieze
 odczyty trafiaja do `waiting_recent` i sa sprawdzane raz w tygodniu; starsze
@@ -423,6 +438,10 @@ Weekly test-mode check of the waiting queue:
 source .venv/bin/activate
 python -m remote_ricoh.run --env-file .env --remote-auto-weekly
 ```
+
+After a successful weekly scan, the automation sends a summary and the local CSV
+report to `EMAIL_WEEKLY_REPORT_TO`. A scan failure sends an alert. Configure the
+same `EMAIL_*` SMTP variables shown in the Polish section above.
 
 The default local queue database is `local/remote_auto/remote_auto.sqlite`.
 The automation compares `Last Report Date/Time` with a one-month threshold.

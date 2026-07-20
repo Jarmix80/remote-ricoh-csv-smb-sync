@@ -138,3 +138,72 @@ def test_settings_from_env_file_uses_default_firebird_credentials_when_empty(
     assert settings.fb_password == "masterkey"
     assert settings.fb_database == "BAZAMS_TEST"
     assert settings.firebird_warning is None
+
+
+def test_settings_from_env_file_loads_weekly_email_settings(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+                "EMAIL_HOST=ksero-partner.com.pl",
+                "EMAIL_PORT=587",
+                "EMAIL_USERNAME=system@ksero-partner.com.pl",
+                "EMAIL_PASSWORD=secret",
+                "EMAIL_SENDER_ADDRESS=system@ksero-partner.com.pl",
+                "EMAIL_SENDER_NAME=",
+                "EMAIL_USE_SSL=false",
+                "EMAIL_USE_TLS=true",
+                "EMAIL_WEEKLY_REPORT_TO=marcin@ksero-partner.com.pl,biuro@ksero-partner.com.pl",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_env_file(env_file)
+
+    assert settings.email is not None
+    assert settings.email.host == "ksero-partner.com.pl"
+    assert settings.email.port == 587
+    assert settings.email.sender_name == "Remote Ricoh"
+    assert settings.email.use_tls is True
+    assert settings.email.weekly_report_recipients == (
+        "marcin@ksero-partner.com.pl",
+        "biuro@ksero-partner.com.pl",
+    )
+
+
+def test_settings_from_env_file_marks_invalid_email_host_as_warning(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+                "EMAIL_HOST=system@ksero-partner.com.pl",
+                "EMAIL_PORT=587",
+                "EMAIL_USERNAME=system@ksero-partner.com.pl",
+                "EMAIL_PASSWORD=secret",
+                "EMAIL_SENDER_ADDRESS=system@ksero-partner.com.pl",
+                "EMAIL_USE_SSL=false",
+                "EMAIL_USE_TLS=true",
+                "EMAIL_WEEKLY_REPORT_TO=marcin@ksero-partner.com.pl",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_env_file(env_file)
+
+    assert settings.email is None
+    assert settings.email_warning is not None
+    assert "EMAIL_HOST" in settings.email_warning
