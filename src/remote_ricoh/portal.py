@@ -150,7 +150,7 @@ class RicohPortalClient:
     def _open_adfs_and_login(self, page: Page, log: Callable[[str], None]) -> None:
         # Wejscie przez RequestCsv daje poprawny redirect SAML do ADFS/HRD.
         log(f"Otwieram strone startowa: {REQUEST_CSV_URL}")
-        page.goto(REQUEST_CSV_URL, wait_until="domcontentloaded", timeout=60_000)
+        self._goto_with_retries(page, REQUEST_CSV_URL)
         page.wait_for_timeout(2_000)
 
         # Partner jest widoczny tylko na ekranie Home Realm Discovery.
@@ -162,51 +162,107 @@ class RicohPortalClient:
         except PlaywrightTimeoutError:
             log("Krok Partner pominiety (strona przeszla od razu do logowania).")
 
-        user_selector = ",".join(
-            [
-                "input[type='email']",
-                "input[name='UserName']",
-                "input[name='username']",
-                "input[id*='user']",
-                "input[name*='user']",
-            ]
-        )
-        pass_selector = ",".join(
-            [
-                "input[type='password']",
-                "input[name='Password']",
-                "input[name='password']",
-                "input[id*='pass']",
-            ]
-        )
-        page.wait_for_selector(user_selector, state="visible", timeout=60_000)
-        page.wait_for_selector(pass_selector, state="visible", timeout=60_000)
-        user_input = page.locator(user_selector).first
-        pass_input = page.locator(pass_selector).first
-
-        if user_input is None or pass_input is None:
-            raise PortalError("Nie znaleziono pol logowania na stronie ADFS.")
+        user_selectors = [
+            "input[type='email']",
+            "input[name='UserName']",
+            "input[name='username']",
+            "input[id*='user']",
+            "input[name*='user']",
+        ]
+        pass_selectors = [
+            "input[type='password']",
+            "input[name='Password']",
+            "input[name='password']",
+            "input[id*='pass']",
+        ]
+        user_input = self._wait_for_first_visible_locator(page, user_selectors, timeout=60_000)
+        if user_input is None:
+            self._capture_debug_snapshot(
+                page,
+                "login_fields_missing",
+                log,
+                {
+                    "visible_user_field": False,
+                    "visible_password_field": False,
+                },
+            )
+            raise PortalError("Nie znaleziono widocznego pola loginu na stronie ADFS.")
 
         user_input.fill(self.login)
-        pass_input.fill(self.password)
+        user_input.dispatch_event("change")
+        pass_input = self._wait_for_first_visible_locator(page, pass_selectors, timeout=2_000)
+        if pass_input is None:
+            next_button = self._wait_for_first_visible_locator(
+                page,
+                [
+                    "#login_button",
+                    "button:has-text('Next')",
+                    "button[type='submit']",
+                    "input[type='submit']",
+                ],
+                timeout=10_000,
+            )
+            if next_button is None:
+                self._capture_debug_snapshot(page, "login_next_missing", log)
+                raise PortalError("Nie znaleziono przycisku Next na pierwszym etapie logowania.")
+            next_button.click(timeout=30_000)
+            log("Wyslano login, oczekuje na drugi etap logowania.")
+            pass_input = self._wait_for_first_visible_locator(
+                page,
+                pass_selectors,
+                timeout=60_000,
+            )
 
-        submit_selector = ",".join(
+        if pass_input is None:
+            self._capture_debug_snapshot(
+                page,
+                "login_password_missing",
+                log,
+                {"visible_user_field": True, "visible_password_field": False},
+            )
+            raise PortalError("Nie znaleziono widocznego pola hasla na stronie ADFS.")
+
+        pass_input.fill(self.password)
+        pass_input.dispatch_event("change")
+
+        submit = self._wait_for_first_visible_locator(
+            page,
             [
                 "#submitButton",
                 "span#submitButton",
+                "#login_button",
                 "[role='button']:has-text('Sign in')",
                 "[role='button']:has-text('Log in')",
+                "[role='button']:has-text('Login')",
                 "button[type='submit']",
                 "input[type='submit']",
                 "button:has-text('Sign in')",
                 "button:has-text('Log in')",
-            ]
+                "button:has-text('Login')",
+            ],
+            timeout=30_000,
         )
-        page.wait_for_selector(submit_selector, state="visible", timeout=30_000)
-        submit = page.locator(submit_selector).first
+        if submit is None:
+            self._capture_debug_snapshot(page, "login_submit_missing", log)
+            raise PortalError("Nie znaleziono widocznego przycisku logowania ADFS.")
 
         submit.click()
-        page.wait_for_load_state("domcontentloaded", timeout=60_000)
+        try:
+            page.wait_for_url(
+                re.compile(r"^https://nslep\.osp\.ricoh\.co\.jp/", re.IGNORECASE),
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+        except PlaywrightTimeoutError as exc:
+            self._capture_debug_snapshot(
+                page,
+                "login_redirect_failed",
+                log,
+                {"current_url": page.url},
+            )
+            raise PortalError(
+                "Logowanie SSO nie przekierowalo sesji z powrotem do portalu Ricoh."
+            ) from exc
         log("Logowanie zakonczone, przechodze do strony Request CSV.")
 
     def _create_csv_request(
@@ -215,7 +271,7 @@ class RicohPortalClient:
         log: Callable[[str], None],
         known_ids: set[str],
     ) -> str:
-        page.goto(REQUEST_CSV_URL, wait_until="domcontentloaded", timeout=60_000)
+        self._goto_with_retries(page, REQUEST_CSV_URL)
         self._set_date_range_from_yesterday_to_today(page, log)
 
         dialog_messages: list[str] = []
@@ -407,10 +463,7 @@ class RicohPortalClient:
 
         match = matches[0]
         if self._is_removing_status(match.requested_status):
-            log(
-                f"DELETE: {serial}: usuniecie juz trwa, "
-                f"Requested Status={match.requested_status}."
-            )
+            log(f"DELETE: {serial}: usuniecie juz trwa, Requested Status={match.requested_status}.")
             return DeviceDeleteReportRow(
                 serial=serial,
                 status="delete_pending",
@@ -456,10 +509,7 @@ class RicohPortalClient:
                         "Pominieto: Last Report Date/Time nie jest wczesniejszy niz "
                         f"jawny prog {allow_recent_before:%Y/%m/%d %H:%M}."
                     )
-                log(
-                    f"DELETE: {serial}: Last Report Date/Time={match.last_report_time} "
-                    f"{message}"
-                )
+                log(f"DELETE: {serial}: Last Report Date/Time={match.last_report_time} {message}")
                 return DeviceDeleteReportRow(
                     serial=serial,
                     status="skipped_recent_report",
@@ -674,7 +724,7 @@ class RicohPortalClient:
         serial: str,
         log: Callable[[str], None],
     ) -> list[DeviceSearchMatch]:
-        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=60_000)
+        self._goto_with_retries(page, SEARCH_URL)
         page.wait_for_timeout(1_000)
         self._select_device_search_target(page)
         self._fill_device_serial_search(page, serial)
@@ -1143,7 +1193,7 @@ class RicohPortalClient:
 
     def _load_myhome_records_html(self, page: Page) -> str:
         """Laduje MyHome i wykonuje SearchMyRequest, aby odswiezyc dane tabeli."""
-        page.goto(MY_HOME_URL, wait_until="domcontentloaded", timeout=60_000)
+        self._goto_with_retries(page, MY_HOME_URL)
         page.wait_for_timeout(1_000)
 
         search_button = self._first_locator(
@@ -1203,7 +1253,8 @@ class RicohPortalClient:
         target_dir = self.debug_dir / f"{timestamp}_{safe_reason}"
 
         try:
-            target_dir.mkdir(parents=True, exist_ok=True)
+            target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            target_dir.chmod(0o700)
             payload = {
                 "timestamp": timestamp,
                 "reason": reason,
@@ -1212,30 +1263,40 @@ class RicohPortalClient:
             if metadata:
                 payload.update(metadata)
 
-            (target_dir / "metadata.json").write_text(
+            metadata_path = target_dir / "metadata.json"
+            metadata_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            metadata_path.chmod(0o600)
 
             try:
-                (target_dir / "page.html").write_text(
+                page_path = target_dir / "page.html"
+                page_path.write_text(
                     page.content(),
                     encoding="utf-8",
                     errors="replace",
                 )
+                page_path.chmod(0o600)
             except Exception as exc:  # noqa: BLE001
-                (target_dir / "page_error.txt").write_text(
+                error_path = target_dir / "page_error.txt"
+                error_path.write_text(
                     f"{type(exc).__name__}: {exc}\n",
                     encoding="utf-8",
                 )
+                error_path.chmod(0o600)
 
             try:
-                page.screenshot(path=str(target_dir / "screenshot.png"), full_page=True)
+                screenshot_path = target_dir / "screenshot.png"
+                page.screenshot(path=str(screenshot_path), full_page=True)
+                screenshot_path.chmod(0o600)
             except Exception as exc:  # noqa: BLE001
-                (target_dir / "screenshot_error.txt").write_text(
+                error_path = target_dir / "screenshot_error.txt"
+                error_path.write_text(
                     f"{type(exc).__name__}: {exc}\n",
                     encoding="utf-8",
                 )
+                error_path.chmod(0o600)
 
             log(f"Zapisano diagnostyke portalu Ricoh: {target_dir.resolve()}")
             return target_dir
@@ -1412,4 +1473,46 @@ class RicohPortalClient:
             except Exception:
                 # Przejscia miedzy stronami potrafia niszczyc kontekst JS.
                 continue
+        return None
+
+    @staticmethod
+    def _goto_with_retries(page: Page, url: str, *, attempts: int = 3) -> None:
+        """Ponawia przejsciowe bledy sieci i odrzuca strony chrome-error."""
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                if not page.url.startswith("chrome-error://"):
+                    return
+                last_error = PortalError(f"Przegladarka otworzyla strone bledu dla {url}.")
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+            if attempt < attempts:
+                page.wait_for_timeout(2_000 * attempt)
+        description = str(last_error).strip() if last_error else "brak szczegolow"
+        raise PortalError(
+            f"Nie mozna otworzyc {url} po {attempts} probach: {description}"
+        ) from last_error
+
+    @staticmethod
+    def _wait_for_first_visible_locator(
+        page: Page,
+        selectors: list[str],
+        *,
+        timeout: int,
+    ) -> Locator | None:
+        """Czeka na pierwszy faktycznie widoczny element, pomijajac ukryte pola."""
+        deadline = time.monotonic() + timeout / 1_000
+        while time.monotonic() < deadline:
+            for selector in selectors:
+                try:
+                    matches = page.locator(selector)
+                    for index in range(min(matches.count(), 20)):
+                        candidate = matches.nth(index)
+                        if candidate.is_visible():
+                            return candidate
+                except Exception:
+                    # Redirect ADFS moze chwilowo zniszczyc kontekst strony.
+                    continue
+            page.wait_for_timeout(250)
         return None

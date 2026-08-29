@@ -19,6 +19,7 @@ DEFAULT_FB_PORT = "3050"
 DEFAULT_FB_USER = "SYSDBA"
 DEFAULT_FB_PASSWORD = "masterkey"
 DEFAULT_WEEKLY_REPORT_SENDER_NAME = "Remote Ricoh"
+PRINTRADAR_ALLOWED_VIEW = "integration.device_counter_readings"
 
 
 class ConfigError(ValueError):
@@ -27,7 +28,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class EmailSettings:
-    """Parametry firmowego SMTP dla raportu tygodniowego."""
+    """Parametry firmowego SMTP dla raportow automatyzacji."""
 
     host: str
     port: int
@@ -38,6 +39,28 @@ class EmailSettings:
     use_ssl: bool
     use_tls: bool
     weekly_report_recipients: tuple[str, ...]
+    documaster_report_recipients: tuple[str, ...] = ()
+    printradar_report_recipients: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PrintRadarSettings:
+    """Polaczenie tylko do odczytu z produkcyjnym widokiem PrintRadar."""
+
+    db_host: str
+    db_port: int
+    db_name: str
+    db_user: str
+    db_password: str
+    db_view: str
+    ssh_host: str
+    ssh_port: int
+    ssh_user: str
+    ssh_identity_file: Path
+    ssh_remote_db_host: str
+    ssh_remote_db_port: int
+    tunnel_local_host: str
+    tunnel_local_port: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +84,10 @@ class Settings:
     firebird_warning: str | None = None
     email: EmailSettings | None = None
     email_warning: str | None = None
+    documaster_allow_writes: bool = False
+    printradar: PrintRadarSettings | None = None
+    printradar_warning: str | None = None
+    printradar_cmail_allow_writes: bool = False
 
     @property
     def firebird_enabled(self) -> bool:
@@ -96,6 +123,16 @@ class Settings:
             "firebird_warning": None,
             "email": None,
             "email_warning": None,
+            "documaster_allow_writes": _parse_bool(
+                "DOCUMASTER_ALLOW_WRITES",
+                pick("DOCUMASTER_ALLOW_WRITES", "0"),
+            ),
+            "printradar": None,
+            "printradar_warning": None,
+            "printradar_cmail_allow_writes": _parse_bool(
+                "PRINTRADAR_CMAIL_ALLOW_WRITES",
+                pick("PRINTRADAR_CMAIL_ALLOW_WRITES", "0"),
+            ),
         }
 
         missing = [
@@ -173,6 +210,28 @@ class Settings:
                             data["fb_role"] = raw_fb["fb_role"] or None
                             data["fb_local_copy_path"] = raw_fb["fb_local_copy_path"] or None
 
+        raw_printradar = {
+            "db_host": pick("PRINTRADAR_DB_HOST"),
+            "db_port": pick("PRINTRADAR_DB_PORT"),
+            "db_name": pick("PRINTRADAR_DB_NAME"),
+            "db_user": pick("PRINTRADAR_DB_USER"),
+            "db_password": pick("PRINTRADAR_DB_PASSWORD"),
+            "db_view": pick("PRINTRADAR_DB_VIEW"),
+            "ssh_host": pick("PRINTRADAR_SSH_HOST"),
+            "ssh_port": pick("PRINTRADAR_SSH_PORT"),
+            "ssh_user": pick("PRINTRADAR_SSH_USER"),
+            "ssh_identity_file": pick("PRINTRADAR_SSH_IDENTITY_FILE"),
+            "ssh_remote_db_host": pick("PRINTRADAR_SSH_REMOTE_DB_HOST"),
+            "ssh_remote_db_port": pick("PRINTRADAR_SSH_REMOTE_DB_PORT"),
+            "tunnel_local_host": pick("PRINTRADAR_TUNNEL_LOCAL_HOST"),
+            "tunnel_local_port": pick("PRINTRADAR_TUNNEL_LOCAL_PORT"),
+        }
+        if any(raw_printradar.values()):
+            try:
+                data["printradar"] = _build_printradar_settings(raw_printradar)
+            except ConfigError as exc:
+                data["printradar_warning"] = f"Konfiguracja PrintRadar pominieta: {exc}"
+
         raw_email = {
             "host": pick("EMAIL_HOST"),
             "port": pick("EMAIL_PORT"),
@@ -183,6 +242,8 @@ class Settings:
             "use_ssl": pick("EMAIL_USE_SSL"),
             "use_tls": pick("EMAIL_USE_TLS"),
             "weekly_report_to": pick("EMAIL_WEEKLY_REPORT_TO"),
+            "documaster_report_to": pick("EMAIL_DOCUMASTER_REPORT_TO"),
+            "printradar_report_to": pick("EMAIL_PRINTRADAR_REPORT_TO"),
         }
         if any(raw_email.values()):
             try:
@@ -230,6 +291,16 @@ def _build_email_settings(raw: dict[str, str]) -> EmailSettings:
     )
     if not recipients:
         raise ConfigError("EMAIL_WEEKLY_REPORT_TO nie zawiera poprawnego adresata")
+    documaster_recipients = tuple(
+        _validate_email_address("EMAIL_DOCUMASTER_REPORT_TO", value)
+        for value in (raw["documaster_report_to"] or raw["weekly_report_to"]).split(",")
+        if value.strip()
+    )
+    printradar_recipients = tuple(
+        _validate_email_address("EMAIL_PRINTRADAR_REPORT_TO", value)
+        for value in (raw["printradar_report_to"] or raw["weekly_report_to"]).split(",")
+        if value.strip()
+    )
 
     return EmailSettings(
         host=raw["host"],
@@ -241,6 +312,52 @@ def _build_email_settings(raw: dict[str, str]) -> EmailSettings:
         use_ssl=use_ssl,
         use_tls=use_tls,
         weekly_report_recipients=recipients,
+        documaster_report_recipients=documaster_recipients,
+        printradar_report_recipients=printradar_recipients,
+    )
+
+
+def _build_printradar_settings(raw: dict[str, str]) -> PrintRadarSettings:
+    required = tuple(raw)
+    missing = [name for name in required if not raw[name]]
+    if missing:
+        raise ConfigError("brak wymaganych zmiennych: " + ", ".join(missing))
+    if raw["db_view"] != PRINTRADAR_ALLOWED_VIEW:
+        raise ConfigError(f"PRINTRADAR_DB_VIEW musi wskazywac {PRINTRADAR_ALLOWED_VIEW}")
+    if raw["db_host"] not in {"127.0.0.1", "localhost"}:
+        raise ConfigError("PRINTRADAR_DB_HOST musi wskazywac lokalny tunel")
+    if raw["tunnel_local_host"] not in {"127.0.0.1", "localhost"}:
+        raise ConfigError("PRINTRADAR_TUNNEL_LOCAL_HOST musi byc lokalny")
+
+    def port(name: str) -> int:
+        try:
+            value = int(raw[name])
+        except ValueError as exc:
+            raise ConfigError(f"{name.upper()} musi byc liczba calkowita") from exc
+        if not 1 <= value <= 65535:
+            raise ConfigError(f"{name.upper()} musi miescic sie w zakresie 1-65535")
+        return value
+
+    db_port = port("db_port")
+    tunnel_local_port = port("tunnel_local_port")
+    if db_port != tunnel_local_port:
+        raise ConfigError("PRINTRADAR_DB_PORT i PRINTRADAR_TUNNEL_LOCAL_PORT musza byc identyczne")
+
+    return PrintRadarSettings(
+        db_host=raw["db_host"],
+        db_port=db_port,
+        db_name=raw["db_name"],
+        db_user=raw["db_user"],
+        db_password=raw["db_password"],
+        db_view=raw["db_view"],
+        ssh_host=raw["ssh_host"],
+        ssh_port=port("ssh_port"),
+        ssh_user=raw["ssh_user"],
+        ssh_identity_file=Path(raw["ssh_identity_file"]).expanduser(),
+        ssh_remote_db_host=raw["ssh_remote_db_host"],
+        ssh_remote_db_port=port("ssh_remote_db_port"),
+        tunnel_local_host=raw["tunnel_local_host"],
+        tunnel_local_port=tunnel_local_port,
     )
 
 

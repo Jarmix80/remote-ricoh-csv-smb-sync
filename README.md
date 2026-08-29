@@ -65,7 +65,7 @@ Przelaczenie na inna baze:
 - test/local alias na serwerze Firebird: zostaw `FB_MODE=network` i zmien `FB_HOST` / `FB_DATABASE`
 - produkcja na Windows Server 2022: zostaw `FB_MODE=network`, ustaw host produkcyjny, port i alias lub pelna sciezke `.FDB`
 - lokalna kopia pliku `.FDB`: ustaw `FB_MODE=local` i wpisz sciezke do pliku w `FB_LOCAL_COPY_PATH`
-- sekcja `FB_*` jest opcjonalna: gdy jej brakuje albo Firebird jest niedostepny, CSV nadal zostana zapisane na SMB, a import do `CMAIL` zostanie tylko pominiety z ostrzezeniem w logu
+- sekcja `FB_*` jest opcjonalna: przy braku konfiguracji import do `CMAIL` zostanie pominiety; gdy skonfigurowany Firebird jest niedostepny, CSV pozostana zapisane na SMB, ale proces zakonczy sie bledem i wysle alert e-mail
 
 ### Instalacja
 ```bash
@@ -236,10 +236,72 @@ Instalacja wpisow cron:
 - codziennie o `06:00` pelny proces pobrania i importu
 - codziennie o `06:30` testowy skan `--remote-auto-scan`
 - w poniedzialki o `07:15` testowa kolejka `--remote-auto-weekly`
+- codziennie o `06:15` synchronizacja PrintRadar -> CMAIL
+- w poniedzialki o `07:30` raport kolejki skanerow PrintRadar
 - po restarcie serwera (`@reboot`, start po 180s) diagnostyka `--dry-run` bez logowania Ricoh
 ```bash
 ./scripts/install_cron.sh
 ```
+
+### Automatyczny import Documaster
+
+Pliki `.csv` i `.xlsx` umieszczone bezposrednio w katalogu SMB `documaster`
+mozna sprawdzic bez zapisu:
+
+```bash
+python -m remote_ricoh.run --env-file .env \
+  --lock-file .state/documaster.lock \
+  --documaster-scan
+```
+
+Realny import do `CMAIL` oraz archiwizacja plikow wymagaja dwoch zabezpieczen:
+
+```bash
+# .env
+DOCUMASTER_ALLOW_WRITES=1
+
+python -m remote_ricoh.run --env-file .env \
+  --lock-file .state/documaster.lock \
+  --documaster-scan --execute-documaster
+```
+
+Automat obsluguje raporty Documaster CSV/XLSX, pomija duplikaty i wiersze z
+niezgodnym klientem, a pozostale odczyty zapisuje transakcyjnie do `CMAIL`.
+Stan plikow znajduje sie w `local/documaster/documaster.sqlite`, a raporty w
+`local/documaster/reports/`. Po sukcesie plik jest przenoszony do podkatalogu
+klienta. Instalator dodaje skan od poniedzialku do piatku o kazdej pelnej
+godzinie od 08:00 do 16:00. Alerty o bledach i pominietych wierszach korzystaja
+z `EMAIL_DOCUMASTER_REPORT_TO` albo, gdy ta zmienna jest pusta, z
+`EMAIL_WEEKLY_REPORT_TO`.
+
+### Synchronizacja PrintRadar do CMAIL
+
+Dry-run calej dostepnej historii nie zapisuje nic w Firebird ani kursora:
+
+```bash
+python -m remote_ricoh.run --env-file .env \
+  --lock-file .state/printradar_cmail.lock \
+  --printradar-cmail-sync --printradar-cmail-backfill
+```
+
+Kontrolowany zapis jednego lub kilku numerow seryjnych wymaga pliku TXT/CSV,
+flagi wykonania oraz `PRINTRADAR_CMAIL_ALLOW_WRITES=1`:
+
+```bash
+python -m remote_ricoh.run --env-file .env \
+  --lock-file .state/printradar_cmail.lock \
+  --printradar-cmail-sync --printradar-cmail-backfill \
+  --printradar-cmail-serials local/canary_serials.txt \
+  --execute-printradar-cmail
+```
+
+Synchronizacja wybiera ostatni poprawny odczyt na numer seryjny i zakonczony
+dzien. Nie nadpisuje licznikow, blokuje spadki i niejednoznaczne dopasowania
+`MASZYNA`. Kazdy rekord ma `MAILFROM=[Import] - PrintRadar` i
+`COMMENTS=printradar:<sample_id>`. `SCANNER_TOTAL` nie jest zapisywane; dane
+skanera trafiaja do kolejki w `local/printradar_cmail/sync.sqlite` i do
+tygodniowego raportu e-mail. Instalator crona dodaje zadanie zapisujace dopiero
+przy `PRINTRADAR_CMAIL_ALLOW_WRITES=1`.
 
 Przy bledzie portalu przed odczytem `Requested ID` lokalne snapshoty diagnostyczne sa
 zapisywane w `.debug/ricoh_portal/`.
@@ -317,7 +379,7 @@ Switching to another database:
 - test/local alias on a Firebird server: keep `FB_MODE=network` and change `FB_HOST` / `FB_DATABASE`
 - production on Windows Server 2022: keep `FB_MODE=network`, set the production host, port, and alias or full `.FDB` path
 - local `.FDB` copy: set `FB_MODE=local` and point `FB_LOCAL_COPY_PATH` to the file
-- the `FB_*` section is optional: if it is missing or Firebird is unavailable, CSV files are still written to SMB and only the `CMAIL` import is skipped with a warning in the log
+- the `FB_*` section is optional: without configuration, the `CMAIL` import is skipped; if a configured Firebird instance is unavailable, CSV files remain saved on SMB, but the process fails and sends an email alert
 
 ### Installation
 ```bash
@@ -476,10 +538,59 @@ Install cron entries:
 - daily at `06:00` for the full download and import process
 - daily at `06:30` for test-mode `--remote-auto-scan`
 - Mondays at `07:15` for test-mode `--remote-auto-weekly`
+- daily at `06:15` for PrintRadar -> CMAIL synchronization
+- Mondays at `07:30` for the PrintRadar scanner queue report
 - after server restart (`@reboot`, starts after 180s) for `--dry-run` diagnostics without Ricoh login
 ```bash
 ./scripts/install_cron.sh
 ```
+
+### Automatic Documaster import
+
+Use dry-run to inspect `.csv` and `.xlsx` files placed directly in the SMB
+`documaster` directory:
+
+```bash
+python -m remote_ricoh.run --env-file .env \
+  --lock-file .state/documaster.lock \
+  --documaster-scan
+```
+
+Real `CMAIL` writes and file archiving require both safeguards:
+
+```bash
+# .env
+DOCUMASTER_ALLOW_WRITES=1
+
+python -m remote_ricoh.run --env-file .env \
+  --lock-file .state/documaster.lock \
+  --documaster-scan --execute-documaster
+```
+
+The importer supports Documaster CSV/XLSX reports, skips duplicates and
+customer mismatches, and writes all other readings to `CMAIL` in one
+transaction per file. File state is stored in
+`local/documaster/documaster.sqlite`, while detailed reports are written to
+`local/documaster/reports/`. Successful files are moved to their customer
+subdirectory. The cron installer schedules scans every hour from 08:00 through
+16:00, Monday through Friday. Warning recipients come from
+`EMAIL_DOCUMASTER_REPORT_TO`, falling back to `EMAIL_WEEKLY_REPORT_TO`.
+
+### PrintRadar to CMAIL synchronization
+
+Run a full-history dry-run without Firebird writes or cursor advancement:
+
+```bash
+python -m remote_ricoh.run --env-file .env \
+  --lock-file .state/printradar_cmail.lock \
+  --printradar-cmail-sync --printradar-cmail-backfill
+```
+
+Real writes require `PRINTRADAR_CMAIL_ALLOW_WRITES=1`,
+`--execute-printradar-cmail`, and can be limited to serials from a TXT/CSV file.
+Inserted rows use `MAILFROM=[Import] - PrintRadar` and
+`COMMENTS=printradar:<sample_id>`. Scanner counters are not written yet; they
+remain in the local SQLite queue and the weekly email report.
 
 When the portal fails before a `Requested ID` is read, local diagnostic snapshots are
 written to `.debug/ricoh_portal/`.

@@ -215,8 +215,7 @@ def test_load_service_order_filters_from_txt(tmp_path: Path) -> None:
 def test_load_service_order_filters_from_csv(tmp_path: Path) -> None:
     source = tmp_path / "orders.csv"
     source.write_text(
-        "order,serial,problem_contains,allow_multiple\n"
-        "14331/2025,G696M313134,odpiąć REMOTE,tak\n",
+        "order,serial,problem_contains,allow_multiple\n14331/2025,G696M313134,odpiąć REMOTE,tak\n",
         encoding="utf-8",
     )
 

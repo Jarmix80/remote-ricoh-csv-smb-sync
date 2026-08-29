@@ -818,3 +818,163 @@ def test_main_requires_remote_auto_mode_for_execute_remote_auto(
     code = run.main()
 
     assert code == 2
+
+
+def test_main_documaster_execute_path(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "documaster.lock"
+    db_path = tmp_path / "documaster.sqlite"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+                "FB_MODE=network",
+                "FB_HOST=127.0.0.1",
+                "FB_DATABASE=BAZAMS_TEST",
+                "DOCUMASTER_ALLOW_WRITES=1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_documaster_scan(self, db_path: Path, *, execute: bool = False) -> int:
+            captured["db_path"] = db_path
+            captured["execute"] = execute
+            return 0
+
+        def run(self) -> int:
+            return 99
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--documaster-scan",
+            "--documaster-db",
+            str(db_path),
+            "--execute-documaster",
+        ],
+    )
+
+    code = run.main()
+
+    assert code == 0
+    assert captured == {"db_path": db_path, "execute": True}
+
+
+def test_main_requires_documaster_mode_for_execute(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "documaster.lock"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--execute-documaster",
+        ],
+    )
+
+    assert run.main() == 2
+
+
+def test_main_printradar_sync_path(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    lock_file = tmp_path / "printradar.lock"
+    db_path = tmp_path / "printradar.sqlite"
+    serials_path = tmp_path / "serials.txt"
+    env_file.write_text(
+        "\n".join(
+            [
+                "login_ricoh=user",
+                "pass_ricoh=pass",
+                "sciezka_remote=//server/share/ricoh",
+                "user_smb=smbuser",
+                "pass_smb=smbpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    serials_path.write_text("ABC123\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_printradar_cmail_sync(
+            self,
+            db_path: Path,
+            *,
+            execute: bool,
+            backfill: bool,
+            serials_path: Path | None,
+        ) -> int:
+            captured.update(
+                db_path=db_path,
+                execute=execute,
+                backfill=backfill,
+                serials_path=serials_path,
+            )
+            return 0
+
+    monkeypatch.setattr(run, "Runner", FakeRunner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--lock-file",
+            str(lock_file),
+            "--printradar-cmail-sync",
+            "--printradar-cmail-db",
+            str(db_path),
+            "--printradar-cmail-backfill",
+            "--printradar-cmail-serials",
+            str(serials_path),
+        ],
+    )
+
+    assert run.main() == 0
+    assert captured == {
+        "db_path": db_path,
+        "execute": False,
+        "backfill": True,
+        "serials_path": serials_path,
+    }
+
+
+def test_main_requires_printradar_mode_for_execute(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run",
+            "--env-file",
+            str(env_file),
+            "--execute-printradar-cmail",
+        ],
+    )
+
+    assert run.main() == 2

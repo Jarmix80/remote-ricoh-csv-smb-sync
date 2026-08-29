@@ -61,6 +61,29 @@ def send_weekly_failure_alert(
     _send_message(settings, message)
 
 
+def send_daily_failure_alert(
+    settings: EmailSettings,
+    error: Exception,
+    *,
+    redactions: tuple[str, ...] = (),
+    sent_at: datetime | None = None,
+) -> None:
+    """Wysyla alert o bledzie glownego dziennego importu Remote/DPLAC."""
+    now = sent_at or datetime.now(tz=WARSAW_TZ)
+    description = _safe_error_description(error, redactions)
+    message = _build_message(
+        settings,
+        subject=f"Remote Ricoh - BLAD dziennego importu {now:%Y-%m-%d}",
+        body=(
+            "Dzienny import licznikow Ricoh Remote/DPLAC nie zakonczyl sie poprawnie.\n\n"
+            f"Czas: {now:%Y-%m-%d %H:%M %Z}\n"
+            f"Blad: {type(error).__name__}: {description}\n\n"
+            "Szczegoly wykonania znajduja sie w logs/cron.log."
+        ),
+    )
+    _send_message(settings, message)
+
+
 def _success_body(
     result: RemoteAutoRunResult,
     ready_rows: list[dict[str, str]],
@@ -111,10 +134,16 @@ def _ready_delete_rows(report_path: Path) -> list[dict[str, str]]:
         ]
 
 
-def _build_message(settings: EmailSettings, *, subject: str, body: str) -> EmailMessage:
+def _build_message(
+    settings: EmailSettings,
+    *,
+    subject: str,
+    body: str,
+    recipients: tuple[str, ...] | None = None,
+) -> EmailMessage:
     message = EmailMessage()
     message["From"] = formataddr((settings.sender_name, settings.sender_address))
-    message["To"] = ", ".join(settings.weekly_report_recipients)
+    message["To"] = ", ".join(recipients or settings.weekly_report_recipients)
     message["Subject"] = subject
     message.set_content(body)
     return message

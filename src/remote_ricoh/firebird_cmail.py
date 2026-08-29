@@ -360,13 +360,22 @@ class FirebirdCmailImporter:
         return int(row[0]) if row and row[0] is not None else 1
 
     @classmethod
-    def _insert_cmail(cls, cursor: Any, record: CounterRecord, device: DeviceMatch | None) -> None:
+    def _insert_cmail(
+        cls,
+        cursor: Any,
+        record: CounterRecord,
+        device: DeviceMatch | None,
+        *,
+        mailfrom: str = "[impotr] - automate AI Ranonen",
+        comments: str | None = None,
+    ) -> int:
         brand = record.brand or (device.brand if device else "")
         model = record.model or (device.model if device else "")
         subject = " ".join(part for part in (brand, model, record.serial) if part).strip()
-        comment_value = f"{dt.date.today().isoformat()}_remote_automate"
+        comment_value = comments or f"{dt.date.today().isoformat()}_remote_automate"
         counter_date = record.counter_date.date() if record.counter_date else None
         counter_date_string = record.counter_date.isoformat() if record.counter_date else ""
+        cmail_id = cls._next_cmail_id(cursor)
 
         cursor.execute(
             """
@@ -381,10 +390,10 @@ class FirebirdCmailImporter:
             )
             """,
             (
-                cls._next_cmail_id(cursor),
+                cmail_id,
                 record.serial,
                 counter_date,
-                "[impotr] - automate AI Ranonen",
+                mailfrom,
                 "",
                 subject,
                 record.total,
@@ -406,6 +415,7 @@ class FirebirdCmailImporter:
                 record.scan_total,
             ),
         )
+        return cmail_id
 
 
 def _load_fdb() -> Any:

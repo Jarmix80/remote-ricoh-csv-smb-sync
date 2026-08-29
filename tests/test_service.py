@@ -71,9 +71,7 @@ def test_runner_run_imports_firebird_after_smb(monkeypatch, tmp_path: Path) -> N
         def __init__(self, **kwargs) -> None:  # noqa: ANN003
             self.kwargs = kwargs
 
-        def request_and_download_zip(
-            self, download_dir: Path, log
-        ) -> _PortalResult:  # noqa: ANN001
+        def request_and_download_zip(self, download_dir: Path, log) -> _PortalResult:  # noqa: ANN001
             zip_path = download_dir / "payload.zip"
             download_dir.mkdir(parents=True, exist_ok=True)
             zip_path.write_bytes(b"zip")
@@ -125,7 +123,44 @@ def test_runner_run_imports_firebird_after_smb(monkeypatch, tmp_path: Path) -> N
     ]
 
 
-def test_runner_run_ignores_firebird_error_after_smb(monkeypatch) -> None:
+def test_runner_run_sends_daily_failure_alert(monkeypatch) -> None:
+    settings = replace(
+        _build_settings(),
+        email=EmailSettings(
+            host="mail.example.com",
+            port=587,
+            username="system@example.com",
+            password="email-secret",
+            sender_address="system@example.com",
+            sender_name="Remote Ricoh",
+            use_ssl=False,
+            use_tls=True,
+            weekly_report_recipients=("ops@example.com",),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_daily(self):  # noqa: ANN001, ANN202
+        raise RuntimeError("portal unavailable")
+
+    def fake_alert(email, error, *, redactions):  # noqa: ANN001
+        captured["email"] = email
+        captured["error"] = error
+        captured["redactions"] = redactions
+
+    monkeypatch.setattr(Runner, "_run_daily_import", fake_daily)
+    monkeypatch.setattr("remote_ricoh.service.send_daily_failure_alert", fake_alert)
+
+    with pytest.raises(RuntimeError, match="portal unavailable"):
+        Runner(settings).run()
+
+    assert captured["email"] is settings.email
+    assert captured["error"].args == ("portal unavailable",)
+    assert "email-secret" in captured["redactions"]
+    assert "pass" in captured["redactions"]
+
+
+def test_runner_run_reports_firebird_error_after_smb(monkeypatch) -> None:
     events: list[tuple[str, str]] = []
 
     class FakeSmbClient:
@@ -149,9 +184,7 @@ def test_runner_run_ignores_firebird_error_after_smb(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:  # noqa: ANN003
             return None
 
-        def request_and_download_zip(
-            self, download_dir: Path, log
-        ) -> _PortalResult:  # noqa: ANN001
+        def request_and_download_zip(self, download_dir: Path, log) -> _PortalResult:  # noqa: ANN001
             zip_path = download_dir / "payload.zip"
             download_dir.mkdir(parents=True, exist_ok=True)
             zip_path.write_bytes(b"zip")
@@ -185,9 +218,9 @@ def test_runner_run_ignores_firebird_error_after_smb(monkeypatch) -> None:
     monkeypatch.setattr("remote_ricoh.service.extract_meter_csvs", fake_extract)
     monkeypatch.setattr("remote_ricoh.service.today_suffix", lambda: "22-05-2026")
 
-    code = Runner(_build_settings()).run()
+    with pytest.raises(RuntimeError, match="Import Firebird CMAIL nie powiodl sie"):
+        Runner(_build_settings()).run()
 
-    assert code == 0
     assert events == [
         ("smb", "DPLAC_22-05-2026.csv"),
         ("smb", "DPLAC_Not_obtained_22-05-2026.csv"),
@@ -259,9 +292,7 @@ def test_runner_run_skips_firebird_when_not_configured(monkeypatch, tmp_path: Pa
         def __init__(self, **kwargs) -> None:  # noqa: ANN003
             return None
 
-        def request_and_download_zip(
-            self, download_dir: Path, log
-        ) -> _PortalResult:  # noqa: ANN001
+        def request_and_download_zip(self, download_dir: Path, log) -> _PortalResult:  # noqa: ANN001
             zip_path = download_dir / "payload.zip"
             download_dir.mkdir(parents=True, exist_ok=True)
             zip_path.write_bytes(b"zip")

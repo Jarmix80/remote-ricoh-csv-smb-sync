@@ -90,6 +90,65 @@ def test_confirm_request_modal_returns_false_when_missing() -> None:
     assert logs == []
 
 
+def test_wait_for_first_visible_locator_skips_hidden_match() -> None:
+    class Candidate:
+        def __init__(self, name: str, visible: bool) -> None:
+            self.name = name
+            self.visible = visible
+
+        def is_visible(self) -> bool:
+            return self.visible
+
+    hidden = Candidate("hidden-password", False)
+    visible = Candidate("visible-password", True)
+
+    class Matches:
+        def count(self) -> int:
+            return 2
+
+        def nth(self, index: int) -> Candidate:
+            return (hidden, visible)[index]
+
+    class FakePage:
+        def locator(self, selector: str) -> Matches:
+            assert selector == "input[id*='pass']"
+            return Matches()
+
+        def wait_for_timeout(self, timeout: int) -> None:
+            raise AssertionError(f"Nie powinno czekac po znalezieniu pola: {timeout}")
+
+    result = RicohPortalClient._wait_for_first_visible_locator(
+        FakePage(),
+        ["input[id*='pass']"],
+        timeout=1_000,
+    )
+
+    assert result is visible
+
+
+def test_goto_with_retries_recovers_from_chrome_error() -> None:
+    class FakePage:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.url = "about:blank"
+            self.waits: list[int] = []
+
+        def goto(self, url: str, **kwargs) -> None:  # noqa: ANN003
+            self.calls += 1
+            self.url = "chrome-error://chromewebdata/" if self.calls == 1 else url
+
+        def wait_for_timeout(self, timeout: int) -> None:
+            self.waits.append(timeout)
+
+    page = FakePage()
+
+    RicohPortalClient._goto_with_retries(page, "https://example.test/")
+
+    assert page.calls == 2
+    assert page.url == "https://example.test/"
+    assert page.waits == [2_000]
+
+
 def test_capture_debug_snapshot_writes_html_metadata_and_screenshot(tmp_path: Path) -> None:
     logs: list[str] = []
     client = RicohPortalClient(
@@ -124,6 +183,10 @@ def test_capture_debug_snapshot_writes_html_metadata_and_screenshot(tmp_path: Pa
     assert metadata["known_ids_count"] == 3
     assert (out / "page.html").read_text(encoding="utf-8") == "<html><body>snapshot</body></html>"
     assert (out / "screenshot.png").read_bytes() == b"png"
+    assert out.stat().st_mode & 0o777 == 0o700
+    assert (out / "metadata.json").stat().st_mode & 0o777 == 0o600
+    assert (out / "page.html").stat().st_mode & 0o777 == 0o600
+    assert (out / "screenshot.png").stat().st_mode & 0o777 == 0o600
     assert logs[-1].startswith("Zapisano diagnostyke portalu Ricoh:")
 
 
@@ -143,6 +206,8 @@ def test_create_csv_request_captures_debug_when_requested_id_missing(monkeypatch
             clicked.append(timeout)
 
     class FakePage:
+        url = "https://nslep.osp.ricoh.co.jp/atremotecenter/RequestCsv.aspx"
+
         def goto(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
             return None
 

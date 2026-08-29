@@ -3,7 +3,9 @@ python-dotenv==1.0.1
 smbprotocol==1.15.0
 fdb
 firebirdsql
+openpyxl>=3.1,<4
 passlib
+psycopg[binary]>=3.2,<4
 pytest==8.3.3
 ruff==0.14.0
 black==25.9.0

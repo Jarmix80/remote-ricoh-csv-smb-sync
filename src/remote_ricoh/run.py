@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 
 from .config import ConfigError, Settings
+from .documaster import DEFAULT_DOCUMASTER_DB
 from .lock import AlreadyRunningError, FileLock
+from .printradar_cmail import DEFAULT_PRINTRADAR_CMAIL_DB
 from .remote_auto import DEFAULT_REMOTE_AUTO_DB, REMOTE_AUTO_PANEL_PORT
 from .service import Runner
 
@@ -74,6 +77,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Uruchamia prosty panel WWW z kolejka, runami i raportami REMOTE.",
     )
+    mode_group.add_argument(
+        "--documaster-scan",
+        action="store_true",
+        help="Skanuje katalog SMB documaster i przygotowuje import licznikow do CMAIL.",
+    )
+    mode_group.add_argument(
+        "--printradar-cmail-sync",
+        action="store_true",
+        help="Synchronizuje zakonczone dzienne liczniki PrintRadar z Firebird CMAIL.",
+    )
+    mode_group.add_argument(
+        "--printradar-cmail-weekly-report",
+        action="store_true",
+        help="Wysyla tygodniowy raport kolejki licznikow skanera PrintRadar.",
+    )
     parser.add_argument(
         "--dplac-not-obtained-csv",
         help="Opcjonalna sciezka do DPLAC_Not_obtained CSV dla trybu --dplac-csv.",
@@ -101,8 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute-service-orders",
         action="store_true",
         help=(
-            "Wykonuje realny zapis dla trybu --close-service-orders. "
-            "Wymaga tez FB_ALLOW_WRITES=1."
+            "Wykonuje realny zapis dla trybu --close-service-orders. Wymaga tez FB_ALLOW_WRITES=1."
         ),
     )
     parser.add_argument(
@@ -141,6 +158,38 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--execute-documaster",
+        action="store_true",
+        help=(
+            "Wykonuje realny import CMAIL i archiwizacje plikow Documaster. "
+            "Wymaga DOCUMASTER_ALLOW_WRITES=1."
+        ),
+    )
+    parser.add_argument(
+        "--documaster-db",
+        default=str(DEFAULT_DOCUMASTER_DB),
+        help="Sciezka do lokalnej bazy stanu importu Documaster.",
+    )
+    parser.add_argument(
+        "--execute-printradar-cmail",
+        action="store_true",
+        help=("Wykonuje realny zapis PrintRadar do CMAIL. Wymaga PRINTRADAR_CMAIL_ALLOW_WRITES=1."),
+    )
+    parser.add_argument(
+        "--printradar-cmail-backfill",
+        action="store_true",
+        help="Czyta cala dostepna historie PrintRadar zamiast danych od zapisanego kursora.",
+    )
+    parser.add_argument(
+        "--printradar-cmail-serials",
+        help="Opcjonalny TXT/CSV z numerami seryjnymi dla kontrolowanego testu lub canary.",
+    )
+    parser.add_argument(
+        "--printradar-cmail-db",
+        default=str(DEFAULT_PRINTRADAR_CMAIL_DB),
+        help="Sciezka do lokalnej bazy kursora i kolejki skanerow PrintRadar.",
+    )
+    parser.add_argument(
         "--remote-auto-host",
         default="0.0.0.0",
         help="Host panelu --remote-auto-panel.",
@@ -156,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     """Uruchamia proces i zwraca kod wyjscia."""
+    os.umask(0o077)
     args = build_parser().parse_args()
 
     env_file = Path(args.env_file)
@@ -187,6 +237,18 @@ def main() -> int:
         return 2
     if args.execute_remote_auto and not (args.remote_auto_scan or args.remote_auto_weekly):
         print("BLAD konfiguracji: --execute-remote-auto wymaga trybu remote-auto.")
+        return 2
+    if args.execute_documaster and not args.documaster_scan:
+        print("BLAD konfiguracji: --execute-documaster wymaga --documaster-scan.")
+        return 2
+    if args.execute_printradar_cmail and not args.printradar_cmail_sync:
+        print("BLAD konfiguracji: --execute-printradar-cmail wymaga --printradar-cmail-sync.")
+        return 2
+    if args.printradar_cmail_backfill and not args.printradar_cmail_sync:
+        print("BLAD konfiguracji: --printradar-cmail-backfill wymaga --printradar-cmail-sync.")
+        return 2
+    if args.printradar_cmail_serials and not args.printradar_cmail_sync:
+        print("BLAD konfiguracji: --printradar-cmail-serials wymaga --printradar-cmail-sync.")
         return 2
 
     try:
@@ -260,6 +322,24 @@ def main() -> int:
                     Path(args.remote_auto_db),
                     execute=args.execute_remote_auto,
                 )
+            if args.documaster_scan:
+                return runner.run_documaster_scan(
+                    Path(args.documaster_db),
+                    execute=args.execute_documaster,
+                )
+            if args.printradar_cmail_sync:
+                return runner.run_printradar_cmail_sync(
+                    Path(args.printradar_cmail_db),
+                    execute=args.execute_printradar_cmail,
+                    backfill=args.printradar_cmail_backfill,
+                    serials_path=(
+                        Path(args.printradar_cmail_serials)
+                        if args.printradar_cmail_serials
+                        else None
+                    ),
+                )
+            if args.printradar_cmail_weekly_report:
+                return runner.run_printradar_cmail_weekly_report(Path(args.printradar_cmail_db))
             return runner.run()
     except AlreadyRunningError as exc:
         print(f"INFO: {exc}")

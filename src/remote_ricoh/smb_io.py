@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import PureWindowsPath
+from typing import Any
 
 import smbclient
 
@@ -62,6 +63,32 @@ class SmbClient:
         target = self._join(relative_parts)
         entries = smbclient.listdir(target)
         return sorted(str(item) for item in entries)
+
+    def read_binary(self, relative_parts: Iterable[str]) -> bytes:
+        """Odczytuje plik binarny z SMB."""
+        target = self._join(relative_parts)
+        with smbclient.open_file(target, mode="rb") as handle:
+            return handle.read()
+
+    def stat(self, relative_parts: Iterable[str]) -> Any:
+        """Zwraca metadane wpisu SMB."""
+        return smbclient.stat(self._join(relative_parts))
+
+    def exists(self, relative_parts: Iterable[str]) -> bool:
+        """Sprawdza istnienie wpisu SMB."""
+        return smbclient.path.exists(self._join(relative_parts))
+
+    def move(self, source_parts: Iterable[str], target_parts: Iterable[str]) -> str:
+        """Przenosi plik w obrebie udzialu SMB bez nadpisywania celu."""
+        source = self._join(source_parts)
+        target = self._join(target_parts)
+        self._ensure_parent(target)
+        smbclient.rename(source, target)
+        return target
+
+    def remove_file(self, relative_parts: Iterable[str]) -> None:
+        """Usuwa pojedynczy plik z SMB."""
+        smbclient.remove(self._join(relative_parts))
 
     def ensure_directory(self, relative_parts: Iterable[str] = ()) -> str:
         """Zapewnia istnienie katalogu i zwraca jego sciezke UNC."""

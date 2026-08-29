@@ -17,8 +17,27 @@ from .config import (
     today_suffix,
 )
 from .device_delete import DeviceDeleteReportRow, load_delete_serials, write_delete_report
+from .documaster import (
+    DEFAULT_DOCUMASTER_DB,
+    DocumasterRunResult,
+    DocumasterStore,
+)
+from .documaster import (
+    run_documaster_scan as execute_documaster_scan,
+)
+from .documaster_email import send_documaster_failure, send_documaster_warning
 from .firebird_cmail import FirebirdCmailImporter
 from .portal import RicohPortalClient
+from .printradar_cmail import (
+    DEFAULT_PRINTRADAR_CMAIL_DB,
+    PrintRadarCmailStore,
+    load_serial_filter,
+    write_scanner_queue_report,
+)
+from .printradar_cmail import (
+    run_printradar_cmail_sync as execute_printradar_cmail_sync,
+)
+from .printradar_email import send_printradar_failure, send_printradar_scanner_report
 from .remote_auto import (
     DEFAULT_REMOTE_AUTO_DB,
     ORDER_STATUS_CLOSED,
@@ -50,7 +69,11 @@ from .service_orders import (
     write_service_order_snapshot,
 )
 from .smb_io import SmbClient
-from .weekly_email import send_weekly_failure_alert, send_weekly_success_report
+from .weekly_email import (
+    send_daily_failure_alert,
+    send_weekly_failure_alert,
+    send_weekly_success_report,
+)
 from .zip_processing import extract_meter_csvs
 
 
@@ -62,6 +85,14 @@ class Runner:
 
     def run(self) -> int:
         """Zwraca kod wyjscia procesu (0 sukces, >0 blad)."""
+        try:
+            return self._run_daily_import()
+        except Exception as exc:
+            self._send_daily_failure_alert(exc)
+            raise
+
+    def _run_daily_import(self) -> int:
+        """Wykonuje dzienny import, a obsluge alertu pozostawia metodzie run."""
         log_name = log_file_name_for_today()
 
         with SmbClient(
@@ -324,6 +355,115 @@ class Runner:
         """Uruchamia prosty panel read-only z kolejka i raportami."""
         return serve_remote_auto_panel(db_path, host=host, port=port)
 
+    def run_documaster_scan(
+        self,
+        db_path: Path = DEFAULT_DOCUMASTER_DB,
+        *,
+        execute: bool = False,
+    ) -> int:
+        """Skanuje katalog SMB documaster i opcjonalnie importuje liczniki."""
+        if execute and not self.settings.documaster_allow_writes:
+            raise PermissionError("Realny import Documaster wymaga DOCUMASTER_ALLOW_WRITES=1.")
+        importer = self._build_firebird_importer()
+        if importer is None:
+            raise ValueError("Brak aktywnej konfiguracji Firebird dla importu Documaster.")
+
+        logger = _ConsoleLogger()
+        try:
+            with SmbClient(
+                remote_unc=self.settings.sciezka_remote,
+                username=self.settings.user_smb,
+                password=self.settings.pass_smb,
+            ) as smb:
+                result = execute_documaster_scan(
+                    smb=smb,
+                    importer=importer,
+                    store=DocumasterStore(db_path),
+                    execute=execute,
+                    log=logger.info,
+                )
+        except Exception as exc:
+            if execute:
+                self._send_documaster_failure(exc, logger)
+            raise
+
+        logger.info(f"Documaster: raport {result.report_path.resolve()}")
+        logger.info(result.as_log_message())
+        if execute and result.has_warning:
+            self._send_documaster_warning(result, logger)
+        return 0
+
+    def run_printradar_cmail_sync(
+        self,
+        db_path: Path = DEFAULT_PRINTRADAR_CMAIL_DB,
+        *,
+        execute: bool = False,
+        backfill: bool = False,
+        serials_path: Path | None = None,
+    ) -> int:
+        """Synchronizuje dzienne liczniki PrintRadar z Firebird CMAIL."""
+        if execute and not self.settings.printradar_cmail_allow_writes:
+            raise PermissionError(
+                "Realny import PrintRadar wymaga PRINTRADAR_CMAIL_ALLOW_WRITES=1."
+            )
+        if self.settings.printradar is None:
+            raise ValueError(
+                self.settings.printradar_warning
+                or "Brak aktywnej konfiguracji polaczenia PrintRadar."
+            )
+        importer = self._build_firebird_importer()
+        if importer is None:
+            raise ValueError("Brak aktywnej konfiguracji Firebird dla importu PrintRadar.")
+
+        logger = _ConsoleLogger()
+        try:
+            result = execute_printradar_cmail_sync(
+                settings=self.settings.printradar,
+                importer=importer,
+                store=PrintRadarCmailStore(db_path),
+                execute=execute,
+                backfill=backfill,
+                serial_filter=load_serial_filter(serials_path),
+            )
+        except Exception as exc:
+            if execute:
+                self._send_printradar_failure(exc, logger)
+            raise
+
+        logger.info(f"PrintRadar CMAIL: raport {result.report_path.resolve()}")
+        logger.info(result.as_log_message())
+        return 0
+
+    def run_printradar_cmail_weekly_report(
+        self,
+        db_path: Path = DEFAULT_PRINTRADAR_CMAIL_DB,
+    ) -> int:
+        """Wysyla raport licznikow skanera oczekujacych na mapowanie."""
+        logger = _ConsoleLogger()
+        store = PrintRadarCmailStore(db_path)
+        report_path = write_scanner_queue_report(store)
+        pending_count = len(store.scanner_rows())
+        if self.settings.email is None:
+            raise ValueError(
+                self.settings.email_warning
+                or "Brak aktywnej konfiguracji e-mail dla raportu PrintRadar."
+            )
+        try:
+            send_printradar_scanner_report(
+                self.settings.email,
+                report_path,
+                pending_count=pending_count,
+            )
+        except Exception as exc:
+            self._send_printradar_failure(exc, logger)
+            raise
+        logger.info(
+            f"PrintRadar: wyslano raport {report_path.resolve()} "
+            f"({pending_count} pozycji) do "
+            f"{', '.join(self.settings.email.printradar_report_recipients)}."
+        )
+        return 0
+
     def _build_firebird_importer(self) -> FirebirdCmailImporter | None:
         if not self.settings.firebird_enabled:
             return None
@@ -365,10 +505,12 @@ class Runner:
             stats = importer.import_dplac(dplac_csv)
         except Exception as exc:  # noqa: BLE001
             logger.info(
-                "OSTRZEZENIE: import Firebird CMAIL nie powiodl sie, ale zapis CSV na SMB "
+                "BLAD: import Firebird CMAIL nie powiodl sie, ale zapis CSV na SMB "
                 f"zostal wykonany. {type(exc).__name__}: {exc}"
             )
-            return
+            raise RuntimeError(
+                "Import Firebird CMAIL nie powiodl sie po poprawnym zapisie CSV na SMB."
+            ) from exc
         logger.info(stats.as_log_message())
 
     def _run_firebird_diagnostics(self, logger: _SmbLogger) -> None:
@@ -381,8 +523,7 @@ class Runner:
             diagnostics = importer.diagnose()
         except Exception as exc:  # noqa: BLE001
             logger.info(
-                "DRY-RUN: Firebird niedostepny, ale SMB jest sprawne. "
-                f"{type(exc).__name__}: {exc}"
+                f"DRY-RUN: Firebird niedostepny, ale SMB jest sprawne. {type(exc).__name__}: {exc}"
             )
             return
         logger.info(
@@ -401,6 +542,96 @@ class Runner:
     def _log_firebird_warning(self, logger: _SmbLogger) -> None:
         if self.settings.firebird_warning:
             logger.info(f"OSTRZEZENIE: {self.settings.firebird_warning}")
+
+    def _send_documaster_warning(
+        self,
+        result: DocumasterRunResult,
+        logger: _ConsoleLogger,
+    ) -> None:
+        if self.settings.email is None:
+            logger.info(
+                "OSTRZEZENIE: raport Documaster nie zostal wyslany: "
+                f"{self.settings.email_warning or 'brak konfiguracji e-mail'}."
+            )
+            return
+        try:
+            send_documaster_warning(self.settings.email, result)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                f"OSTRZEZENIE: nie udalo sie wyslac raportu Documaster: {type(exc).__name__}: {exc}"
+            )
+            return
+        logger.info(
+            "Documaster: wyslano ostrzezenie e-mail do "
+            f"{', '.join(self.settings.email.documaster_report_recipients)}."
+        )
+
+    def _send_documaster_failure(
+        self,
+        error: Exception,
+        logger: _ConsoleLogger,
+    ) -> None:
+        if self.settings.email is None:
+            logger.info(
+                "OSTRZEZENIE: alert bledu Documaster nie zostal wyslany: "
+                f"{self.settings.email_warning or 'brak konfiguracji e-mail'}."
+            )
+            return
+        redactions = tuple(
+            value
+            for value in (
+                self.settings.pass_ricoh,
+                self.settings.pass_smb,
+                self.settings.fb_password or "",
+                self.settings.email.password,
+            )
+            if value
+        )
+        try:
+            send_documaster_failure(
+                self.settings.email,
+                error,
+                redactions=redactions,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "OSTRZEZENIE: nie udalo sie wyslac alertu bledu Documaster: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _send_printradar_failure(
+        self,
+        error: Exception,
+        logger: _ConsoleLogger,
+    ) -> None:
+        if self.settings.email is None:
+            logger.info(
+                "OSTRZEZENIE: alert bledu PrintRadar nie zostal wyslany: "
+                f"{self.settings.email_warning or 'brak konfiguracji e-mail'}."
+            )
+            return
+        redactions = tuple(
+            value
+            for value in (
+                self.settings.pass_ricoh,
+                self.settings.pass_smb,
+                self.settings.fb_password or "",
+                self.settings.printradar.db_password if self.settings.printradar else "",
+                self.settings.email.password,
+            )
+            if value
+        )
+        try:
+            send_printradar_failure(
+                self.settings.email,
+                error,
+                redactions=redactions,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "OSTRZEZENIE: nie udalo sie wyslac alertu bledu PrintRadar: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _run_remote_auto(
         self,
@@ -611,6 +842,35 @@ class Runner:
         except Exception as email_error:  # noqa: BLE001
             print(
                 "Remote auto: nie udalo sie wyslac alertu e-mail: "
+                f"{type(email_error).__name__}: {email_error}"
+            )
+
+    def _send_daily_failure_alert(self, error: Exception) -> None:
+        email = self.settings.email
+        if email is None:
+            details = self.settings.email_warning or "brak konfiguracji EMAIL_*."
+            print(f"Remote Ricoh: nie wyslano alertu dziennego: {details}")
+            return
+        try:
+            send_daily_failure_alert(
+                email,
+                error,
+                redactions=tuple(
+                    value
+                    for value in (
+                        email.password,
+                        self.settings.pass_ricoh,
+                        self.settings.pass_smb,
+                        self.settings.fb_password or "",
+                    )
+                    if value
+                ),
+            )
+            recipients = ", ".join(email.weekly_report_recipients)
+            print(f"Remote Ricoh: wyslano alert dziennego importu do {recipients}.")
+        except Exception as email_error:  # noqa: BLE001
+            print(
+                "Remote Ricoh: nie udalo sie wyslac alertu dziennego: "
                 f"{type(email_error).__name__}: {email_error}"
             )
 

@@ -13,3 +13,5 @@ session_state/
 *.egg-info/
 .codex/
 .debug/
+inbox/
+local/
