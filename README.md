@@ -300,8 +300,10 @@ dzien. Nie nadpisuje licznikow, blokuje spadki i niejednoznaczne dopasowania
 `MASZYNA`. Kazdy rekord ma `MAILFROM=[Import] - PrintRadar` i
 `COMMENTS=printradar:<sample_id>`. `SCANNER_TOTAL` nie jest zapisywane; dane
 skanera trafiaja do kolejki w `local/printradar_cmail/sync.sqlite` i do
-tygodniowego raportu e-mail. Instalator crona dodaje zadanie zapisujace dopiero
-przy `PRINTRADAR_CMAIL_ALLOW_WRITES=1`.
+tygodniowego raportu e-mail. Kazdy przebieg odswieza najnowszy zakonczony
+odczyt skanera dla kazdego numeru seryjnego niezaleznie od kursora nowych
+probek. Instalator crona dodaje zadanie zapisujace dopiero przy
+`PRINTRADAR_CMAIL_ALLOW_WRITES=1`.
 
 Przy bledzie portalu przed odczytem `Requested ID` lokalne snapshoty diagnostyczne sa
 zapisywane w `.debug/ricoh_portal/`.
@@ -590,7 +592,9 @@ Real writes require `PRINTRADAR_CMAIL_ALLOW_WRITES=1`,
 `--execute-printradar-cmail`, and can be limited to serials from a TXT/CSV file.
 Inserted rows use `MAILFROM=[Import] - PrintRadar` and
 `COMMENTS=printradar:<sample_id>`. Scanner counters are not written yet; they
-remain in the local SQLite queue and the weekly email report.
+remain in the local SQLite queue and the weekly email report. Every run refreshes
+the latest completed scanner reading per serial independently of the new-sample
+cursor.
 
 When the portal fails before a `Requested ID` is read, local diagnostic snapshots are
 written to `.debug/ricoh_portal/`.

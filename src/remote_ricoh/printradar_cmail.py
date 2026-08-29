@@ -111,6 +111,7 @@ class PrintRadarSyncResult:
     backfill: bool
     fetched: int
     selected: int
+    scanner_refreshed: int
     rows: list[PrintRadarSyncRow]
     report_path: Path
     cursor_before: str
@@ -132,6 +133,7 @@ class PrintRadarSyncResult:
         return (
             f"PrintRadar CMAIL: execute={self.execute}, backfill={self.backfill}, "
             f"fetched={self.fetched}, selected={self.selected}, "
+            f"scanners_refreshed={self.scanner_refreshed}, "
             f"statuses=({statuses or 'brak'}), cursor={self.cursor_before}->{self.cursor_after}."
         )
 
@@ -465,6 +467,40 @@ class PrintRadarSource:
             connection.close()
         return [_parse_source_row(row) for row in rows]
 
+    def fetch_latest_scanners(self, *, collected_before: str) -> list[PrintRadarReading]:
+        """Fetch the newest completed scanner value independently of the daily cursor."""
+        psycopg = importlib.import_module("psycopg")
+        connection = psycopg.connect(
+            host=self.settings.db_host,
+            port=self.settings.db_port,
+            dbname=self.settings.db_name,
+            user=self.settings.db_user,
+            password=self.settings.db_password,
+            options="-c default_transaction_read_only=on",
+        )
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT DISTINCT ON (serial_number)
+                           device_id, serial_number, device_name, site_id, device_host,
+                           collected_at, canonical_counters, total_bw, total_color,
+                           machine_total, scan_total, sample_id
+                    FROM {PRINTRADAR_ALLOWED_VIEW}
+                    WHERE collected_at < %s
+                      AND scan_total IS NOT NULL
+                      AND COALESCE(serial_number, '') <> ''
+                    ORDER BY serial_number, collected_at DESC, sample_id DESC
+                    """,
+                    (collected_before,),
+                )
+                columns = [item.name for item in cursor.description]
+                rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+            connection.rollback()
+        finally:
+            connection.close()
+        return [_parse_source_row(row) for row in rows]
+
 
 def run_printradar_cmail_sync(
     *,
@@ -496,19 +532,27 @@ def run_printradar_cmail_sync(
 
     try:
         with SshTunnel(settings):
-            readings = PrintRadarSource(settings).fetch(
+            source = PrintRadarSource(settings)
+            readings = source.fetch(
                 collected_after=cursor_before,
+                collected_before=completed_before_text,
+            )
+            scanner_readings = source.fetch_latest_scanners(
                 collected_before=completed_before_text,
             )
         if serial_filter:
             allowed = {_normalize_serial(value) for value in serial_filter}
             readings = [reading for reading in readings if reading.serial in allowed]
+            scanner_readings = [
+                reading for reading in scanner_readings if reading.serial in allowed
+            ]
         selected, invalid_rows = select_daily_readings(readings, now=actual_now)
         sync_rows = _sync_selected(
             selected,
             importer=importer,
             store=store,
             execute=execute,
+            scanner_readings=scanner_readings,
         )
         rows = [*invalid_rows, *sync_rows]
         cursor_after = max(
@@ -538,6 +582,7 @@ def run_printradar_cmail_sync(
             backfill=backfill,
             fetched=len(readings),
             selected=len(selected),
+            scanner_refreshed=len(scanner_readings),
             rows=rows,
             report_path=report_path,
             cursor_before=cursor_before,
@@ -602,18 +647,26 @@ def _sync_selected(
     importer: FirebirdCmailImporter,
     store: PrintRadarCmailStore,
     execute: bool,
+    scanner_readings: Sequence[PrintRadarReading] | None = None,
 ) -> list[PrintRadarSyncRow]:
     connection = importer._connect()
     rows: list[PrintRadarSyncRow] = []
     try:
         cursor = connection.cursor()
-        serials = sorted({reading.serial for reading in readings})
+        scanner_candidates = readings if scanner_readings is None else scanner_readings
+        serials = sorted(
+            {reading.serial for reading in readings}
+            | {reading.serial for reading in scanner_candidates}
+        )
         latest_by_serial = _fetch_latest_cmail_batch(cursor, serials)
-        devices_by_serial = _fetch_unique_devices_batch(cursor, serials)
+        devices_by_serial = _fetch_unique_devices_batch(
+            cursor,
+            sorted({reading.serial for reading in readings}),
+        )
         existing_markers = _fetch_printradar_markers(cursor)
 
         scanner_latest: dict[str, PrintRadarReading] = {}
-        for reading in readings:
+        for reading in scanner_candidates:
             if reading.scan_total is None:
                 continue
             current = scanner_latest.get(reading.serial)

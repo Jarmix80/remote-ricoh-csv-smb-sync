@@ -237,6 +237,31 @@ def test_sync_execute_inserts_print_only_with_printradar_marker(tmp_path: Path) 
     assert scanner["scan_total"] == 30
 
 
+def test_sync_refreshes_scanner_queue_outside_daily_cursor(tmp_path: Path) -> None:
+    daily_reading = _reading(sample_id="daily", scan_total=2)
+    latest_scanner = _reading(
+        sample_id="latest-scanner",
+        collected_at=dt.datetime(2026, 7, 27, 12, tzinfo=dt.UTC),
+        scan_total=205_752,
+    )
+    connection = _FakeConnection(_FakeCursor())
+    importer = _FakeImporter(connection)
+    store = PrintRadarCmailStore(tmp_path / "state.sqlite")
+    store.initialize()
+
+    _sync_selected(
+        [daily_reading],
+        importer=importer,
+        store=store,
+        execute=False,
+        scanner_readings=[latest_scanner],
+    )
+
+    scanner = store.scanner_rows()[0]
+    assert scanner["sample_id"] == "latest-scanner"
+    assert scanner["scan_total"] == 205_752
+
+
 def test_sync_dry_run_blocks_target_ahead_and_preserves_zero_in_report(
     tmp_path: Path,
 ) -> None:
