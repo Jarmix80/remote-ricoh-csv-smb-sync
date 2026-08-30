@@ -71,7 +71,9 @@ def test_runner_run_imports_firebird_after_smb(monkeypatch, tmp_path: Path) -> N
         def __init__(self, **kwargs) -> None:  # noqa: ANN003
             self.kwargs = kwargs
 
-        def request_and_download_zip(self, download_dir: Path, log) -> _PortalResult:  # noqa: ANN001
+        def request_and_download_zip(
+            self, download_dir: Path, log
+        ) -> _PortalResult:  # noqa: ANN001
             zip_path = download_dir / "payload.zip"
             download_dir.mkdir(parents=True, exist_ok=True)
             zip_path.write_bytes(b"zip")
@@ -184,7 +186,9 @@ def test_runner_run_reports_firebird_error_after_smb(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:  # noqa: ANN003
             return None
 
-        def request_and_download_zip(self, download_dir: Path, log) -> _PortalResult:  # noqa: ANN001
+        def request_and_download_zip(
+            self, download_dir: Path, log
+        ) -> _PortalResult:  # noqa: ANN001
             zip_path = download_dir / "payload.zip"
             download_dir.mkdir(parents=True, exist_ok=True)
             zip_path.write_bytes(b"zip")
@@ -292,7 +296,9 @@ def test_runner_run_skips_firebird_when_not_configured(monkeypatch, tmp_path: Pa
         def __init__(self, **kwargs) -> None:  # noqa: ANN003
             return None
 
-        def request_and_download_zip(self, download_dir: Path, log) -> _PortalResult:  # noqa: ANN001
+        def request_and_download_zip(
+            self, download_dir: Path, log
+        ) -> _PortalResult:  # noqa: ANN001
             zip_path = download_dir / "payload.zip"
             download_dir.mkdir(parents=True, exist_ok=True)
             zip_path.write_bytes(b"zip")
